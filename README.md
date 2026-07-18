@@ -17,6 +17,19 @@ Cloudflare Worker source for the Ascension Digital Group AdSense-site monitor.
 - `mycalendartools.net` â†’ `nightowlhoothoot83-create/Mycalendartools`
 - `wheelnamepicker.com.au` â†’ `nightowlhoothoot83-create/Wheelnamepicker`
 
+## SaaS monitor
+
+The same once-daily Worker also monitors six Raven-Sharp SaaS products without adding another scheduled Worker invocation. It makes one homepage request per deployed app. Apps that are not live yet are recorded as `awaiting_deployment`, so they do not waste calls or create false outage alerts.
+
+- `pod.raven-sharp.com` - Raven-Sharp POD
+- `opt.raven-sharp.com` - Image Optimiser & Upscaler
+- `cleaner.raven-sharp.com` - Smart AI Cleaner (awaiting deployment)
+- `ads.raven-sharp.com` - Ad Manager (awaiting deployment)
+- `books.raven-sharp.com` - Book Creator (awaiting deployment)
+- `content.raven-sharp.com` - Content Creator (awaiting deployment)
+
+Endpoints: `/saas/run` starts a manual SaaS check and `/saas/report` returns the latest saved result.
+
 ## Required Cloudflare bindings
 
 - `MONITOR_KV`: existing `site-monitor-history` KV namespace
