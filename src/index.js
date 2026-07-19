@@ -3,10 +3,10 @@ import { SITES, runRepairCycle } from "./repair.js";
 const SAAS_APPS = [
   { id: "pod", name: "Raven-Sharp POD", repo: "Raven-Sharp-POD", url: "https://pod.raven-sharp.com", deployed: true },
   { id: "image-optimiser", name: "Image Optimiser & Upscaler", repo: "raven-sharp-image-optimiser-and-upscaler", url: "https://opt.raven-sharp.com", deployed: true },
-  { id: "smart-cleaner", name: "Smart AI Cleaner", repo: "Raven-Sharp-Smart-AI-Cleaner", url: "https://cleaner.raven-sharp.com", deployed: false },
-  { id: "ad-manager", name: "Ad Manager", repo: "Raven-Sharp-Ad-Manager", url: "https://ads.raven-sharp.com", deployed: false },
-  { id: "book-creator", name: "Book Creator", repo: "Raven-Sharp-Book-Creator", url: "https://books.raven-sharp.com", deployed: false },
-  { id: "content-creator", name: "Content Creator", repo: "Raven-Sharp-Content-Creator", url: "https://content.raven-sharp.com", deployed: false }
+  { id: "smart-cleaner", name: "Smart AI Cleaner", repo: "Raven-Sharp-Smart-AI-Cleaner", url: "https://cleaner.raven-sharp.com", deployed: true },
+  { id: "ad-manager", name: "Ad Manager", repo: "Raven-Sharp-Ad-Manager", url: "https://ads.raven-sharp.com", deployed: true },
+  { id: "book-creator", name: "Book Creator", repo: "Raven-Sharp-Book-Creator", url: "https://books.raven-sharp.com", deployed: true },
+  { id: "content-creator", name: "Content Creator", repo: "Raven-Sharp-Content-Creator", url: "https://content.raven-sharp.com", deployed: true }
 ];
 
 const json = (value, status = 200) => new Response(JSON.stringify(value, null, 2), {
@@ -73,6 +73,7 @@ async function checkSite(site) {
       id: site.id,
       name: site.name,
       url: site.url,
+      final_url: response.url,
       status: response.ok ? "up" : "error",
       http: response.status,
       response_ms: Date.now() - started,
@@ -80,6 +81,8 @@ async function checkSite(site) {
         title: /<title>[\s\S]+?<\/title>/i.test(html),
         description: /<meta\b[^>]*name=["']description["']/i.test(html),
         canonical: /<link\b[^>]*rel=["']canonical["']/i.test(html),
+        canonical_target: new RegExp(`<link\\b[^>]*(?:rel=["']canonical["'][^>]*href|href)=["']${site.url.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\/?["']`, "i").test(html),
+        redirect_target: new URL(response.url).hostname === new URL(site.url).hostname,
         schema: /<script\b[^>]*type=["']application\/ld\+json["']/i.test(html),
         h1: /<h1\b/i.test(html),
         privacy: /href=["'][^"']*privacy/i.test(html),
@@ -152,6 +155,19 @@ async function latest(env) {
   return report || { status: "no_report", message: "Run /run first" };
 }
 
+async function repair(env) {
+  const report = { run_at: new Date().toISOString(), results: await runRepairCycle(env.GITHUB_TOKEN) };
+  if (env.MONITOR_KV) await env.MONITOR_KV.put("latest-repair-report-v1", JSON.stringify(report));
+  return report;
+}
+
+async function latestRepair(env) {
+  return env.MONITOR_KV && await env.MONITOR_KV.get("latest-repair-report-v1", "json") || {
+    status: "no_report",
+    message: "No repair cycle has run yet"
+  };
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -165,18 +181,19 @@ export default {
     if (url.pathname === "/report.json") return json({ sites: await latest(env), saas: await latestSaas(env) });
     if (url.pathname === "/saas/run") return json(await auditSaas(env));
     if (url.pathname === "/saas/report.json") return json(await latestSaas(env));
+    if (url.pathname === "/repair/report.json") return json(await latestRepair(env));
     if (url.pathname === "/repair/run" && request.method === "POST") {
       if (!env.REPAIR_APPROVAL_KEY || request.headers.get("Authorization") !== `Bearer ${env.REPAIR_APPROVAL_KEY}`) {
         return json({ error: "Repair approval required" }, 403);
       }
-      return json({ run_at: new Date().toISOString(), results: await runRepairCycle(env.GITHUB_TOKEN) });
+      return json(await repair(env));
     }
     if (url.pathname === "/") return Response.redirect(`${url.origin}/report`, 302);
     return json({ service: "ADG Monitor v4", endpoints: ["/health", "/run-all", "/report", "/report.json", "/saas/run", "/saas/report.json", "POST /repair/run"] });
   },
 
   async scheduled(_event, env, ctx) {
-    ctx.waitUntil(Promise.all([audit(env), auditSaas(env)]));
+    ctx.waitUntil(Promise.all([audit(env), auditSaas(env), repair(env)]));
   }
 };
 
