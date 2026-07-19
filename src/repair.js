@@ -95,6 +95,28 @@ export function proposeRobotsRepair(site, robots) {
   return { content: `${robots.trim()}\n${sitemap}\n`, changes: ["Add canonical sitemap reference"], changed: true };
 }
 
+export function proposeCanonicalRepair(site, html) {
+  const expected = `${site.url}/`;
+  const existing = html.match(/<link\b[^>]*rel=["']canonical["'][^>]*href=["']([^"']+)["'][^>]*>/i)
+    || html.match(/<link\b[^>]*href=["']([^"']+)["'][^>]*rel=["']canonical["'][^>]*>/i);
+
+  if (existing) {
+    return existing[1] === expected
+      ? { content: html, status: "clean", changes: [] }
+      : { content: html, status: "approval_required", changes: [`Change canonical from ${existing[1]} to ${expected}`] };
+  }
+
+  if (!/<\/head>/i.test(html)) {
+    return { content: html, status: "approval_required", changes: ["Add a canonical URL after repairing the document head"] };
+  }
+
+  return {
+    content: html.replace(/<\/head>/i, `  <link rel="canonical" href="${expected}">\n</head>`),
+    status: "repaired",
+    changes: [`Add self-referencing canonical ${expected}`]
+  };
+}
+
 async function createBranch(site, token, branch) {
   const repo = `/repos/${OWNER}/${site.repo}`;
   const main = await github(`${repo}/git/ref/heads/main`, token);
@@ -112,6 +134,43 @@ async function updateFile(site, file, content, token, branch, message) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ message, content: encode(content), sha: file.sha, branch })
   });
+}
+
+async function applySafeRepairs(site, token) {
+  if (!token) return { status: "skipped", reason: "GITHUB_TOKEN is missing", changes: [] };
+
+  const changes = [];
+  const needsApproval = [];
+
+  try {
+    const robots = await getFile(site, "robots.txt", token);
+    const proposal = proposeRobotsRepair(site, robots.content);
+    if (proposal.changed) {
+      await updateFile(site, robots, proposal.content, token, "main", `ADG Monitor: safe robots.txt repair for ${site.name}`);
+      changes.push(...proposal.changes);
+    }
+  } catch (error) {
+    needsApproval.push(`Review robots.txt: ${error.message}`);
+  }
+
+  try {
+    const homepage = await getFile(site, "index.html", token);
+    const canonical = proposeCanonicalRepair(site, homepage.content);
+    if (canonical.status === "repaired") {
+      await updateFile(site, homepage, canonical.content, token, "main", `ADG Monitor: add canonical URL for ${site.name}`);
+      changes.push(...canonical.changes);
+    } else if (canonical.status === "approval_required") {
+      needsApproval.push(...canonical.changes);
+    }
+  } catch (error) {
+    needsApproval.push(`Review canonical page: ${error.message}`);
+  }
+
+  return {
+    status: changes.length ? "repaired" : needsApproval.length ? "approval_required" : "clean",
+    changes,
+    approval_required: needsApproval
+  };
 }
 
 async function openPullRequest(site, token, branch, changes) {
@@ -150,7 +209,9 @@ export async function runRepairCycle(token) {
   const results = [];
   for (const site of SITES) {
     try {
-      results.push(await prepareRepairPullRequest(site, token));
+      const automatic = await applySafeRepairs(site, token);
+      const approval = await prepareRepairPullRequest(site, token);
+      results.push({ site: site.id, automatic, approval });
     } catch (error) {
       results.push({ site: site.id, status: "error", message: error.message });
     }
