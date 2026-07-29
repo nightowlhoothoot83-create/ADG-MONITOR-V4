@@ -189,7 +189,7 @@ async function latestRepair(env) {
 }
 
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     const url = new URL(request.url);
     if (url.pathname === "/health") return json({ ok: true, service: "adg-monitor-v4", github_configured: Boolean(env.GITHUB_TOKEN), saas_apps: SAAS_APPS.length });
     if (url.pathname === "/run") return json(await audit(env));
@@ -200,8 +200,9 @@ export default {
     if (url.pathname === "/report" || url.pathname === "/saas/report") return html(dashboard(await latest(env), await latestSaas(env), await latestIndexing(env), await latestRepair(env)));
     if (url.pathname === "/report.json") return json({ sites: await latest(env), saas: await latestSaas(env), indexing: await latestIndexing(env), repairs: await latestRepair(env) });
     if (url.pathname === "/indexing/run") {
-      const indexing = await auditIndexing(env, SITES);
-      return html(dashboard(await latest(env), await latestSaas(env), indexing, await latestRepair(env)));
+      ctx.waitUntil(auditIndexing(env, SITES));
+      const indexing = await latestIndexing(env);
+      return html(dashboard(await latest(env), await latestSaas(env), { ...indexing, run_started: new Date().toISOString() }, await latestRepair(env)));
     }
     if (url.pathname === "/indexing/report.json") return json(await latestIndexing(env));
     if (url.pathname === "/saas/run") return json(await auditSaas(env));
