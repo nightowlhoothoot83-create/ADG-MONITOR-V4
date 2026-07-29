@@ -30,11 +30,26 @@ The same once-daily Worker also monitors six Raven-Sharp SaaS products without a
 
 Endpoints: `/saas/run` starts a manual SaaS check and `/saas/report` returns the latest saved result.
 
+## Page discovery and Google indexing
+
+- The Worker reads each managed site's robots.txt and sitemap files.
+- It stores up to 100 discovered URLs per site in the latest indexing report.
+- A separate daily trigger rotates through URL Inspection checks without exhausting the health-monitor request budget.
+- Sitemaps are submitted through the Search Console API.
+- The dashboard provides manual **Check indexing** and **Check repairs** actions.
+
+## Repair policy
+
+- Missing sitemap references and missing self-canonicals are safe automatic corrections.
+- Redirect-like links, policy-link changes, canonical conflicts, and other consequential changes are placed in the dashboard approval queue.
+- Approved changes use the protected repair endpoint to create a reviewable GitHub pull request.
+
 ## Required Cloudflare bindings
 
 - `MONITOR_KV`: existing `site-monitor-history` KV namespace
 - `GITHUB_TOKEN`: fine-grained or classic token with repository contents and pull-request write access
-- `REPAIR_APPROVAL_KEY`: separate random secret required to run repairs
+- `REPAIR_APPROVAL_KEY`: separate random secret required to approve repair pull requests
+- `GSC_SERVICE_ACCOUNT_KEY`: Google service-account JSON with Search Console access
 
 Google's general Search Console API supports sitemap submission and URL inspection. Direct Indexing API notifications are intentionally excluded because Google restricts them to qualifying job-posting and livestream pages.
 
