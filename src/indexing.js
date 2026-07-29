@@ -3,7 +3,7 @@ const INSPECTION_URL = "https://searchconsole.googleapis.com/v1/urlInspection/in
 const WEBMASTERS_API = "https://www.googleapis.com/webmasters/v3";
 const MAX_SITEMAPS_PER_SITE = 5;
 const MAX_PAGES_PER_SITE = 100;
-const INSPECTIONS_PER_SITE_PER_RUN = 10;
+const INSPECTIONS_PER_SITE_PER_RUN = 3;
 const MAX_TEXT_BYTES = 1_000_000;
 
 const encoder = new TextEncoder();
@@ -180,10 +180,10 @@ export async function auditIndexing(env, sites) {
       try { entry.sitemap_submitted = await submitSitemap(site, discovery.sitemap_urls[0], accessToken); }
       catch (error) { entry.google_error = error.message; }
       const batch = await nextInspectionBatch(env, site, discovery.discovered_pages);
-      for (const pageUrl of batch) {
-        try { entry.inspections.push(await inspectUrl(site, pageUrl, accessToken)); }
-        catch (error) { entry.inspections.push({ url: pageUrl, verdict: "ERROR", message: error.message }); }
-      }
+      entry.inspections = await Promise.all(batch.map(async pageUrl => {
+        try { return await inspectUrl(site, pageUrl, accessToken); }
+        catch (error) { return { url: pageUrl, verdict: "ERROR", message: error.message }; }
+      }));
       entry.inspected_count = entry.inspections.length;
       entry.indexed_count = entry.inspections.filter(item => item.verdict === "PASS").length;
       entry.not_indexed_count = entry.inspections.filter(item => item.verdict !== "PASS" && item.verdict !== "ERROR").length;
