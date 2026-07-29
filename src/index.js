@@ -1,4 +1,5 @@
-import { SITES, runRepairCycle } from "./repair.js";
+import { SITES, runRepairCycle, runScheduledRepairCycle } from "./repair.js";
+import { auditIndexing, latestIndexing } from "./indexing.js";
 
 const SAAS_APPS = [
   { id: "pod", name: "Raven-Sharp POD", repo: "Raven-Sharp-POD", url: "https://pod.raven-sharp.com", deployed: true },
@@ -43,14 +44,19 @@ function card(item) {
   </article>`;
 }
 
-function dashboard(siteReport, saasReport) {
+function dashboard(siteReport, saasReport, indexingReport = {}, repairReport = {}) {
   const sites = siteReport.sites || [];
   const apps = saasReport.apps || [];
   const all = [...sites, ...apps];
   const online = all.filter(item => item.status === "up").length;
   const waiting = all.filter(item => item.status === "awaiting_deployment").length;
   const attention = all.length - online - waiting;
-  const lastRun = [siteReport.run_at, saasReport.run_at].filter(Boolean).sort().at(-1);
+  const lastRun = [siteReport.run_at, saasReport.run_at, indexingReport.run_at, repairReport.run_at].filter(Boolean).sort().at(-1);
+  const indexingSites = indexingReport.sites || [];
+  const discovered = indexingSites.reduce((total, site) => total + (site.discovered_count || 0), 0);
+  const inspected = indexingSites.reduce((total, site) => total + (site.inspected_count || 0), 0);
+  const indexed = indexingSites.reduce((total, site) => total + (site.indexed_count || 0), 0);
+  const repairItems = (repairReport.results || []).flatMap(result => result.approval?.status === "approval_required" ? [{ site: result.site, changes: result.approval.changes || [] }] : []);
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
   <title>ADG Monitor V4</title><style>
   :root{color-scheme:dark;--bg:#07111f;--panel:#101d30;--line:#243650;--text:#f4f8ff;--muted:#9fb0c8;--green:#42d392;--amber:#f7bd58;--red:#ff6b75;--blue:#67a7ff}*{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at top,#142b4c 0,#07111f 48%);font:15px/1.5 system-ui,-apple-system,Segoe UI,sans-serif;color:var(--text)}main{width:min(1180px,calc(100% - 32px));margin:auto;padding:42px 0 70px}header{display:flex;justify-content:space-between;align-items:end;gap:20px;margin-bottom:24px}h1{font-size:clamp(30px,5vw,50px);line-height:1;margin:0 0 10px}.subtitle,.updated{color:var(--muted);margin:0}.actions{display:flex;gap:10px;flex-wrap:wrap}.button{background:var(--blue);color:#06101e;text-decoration:none;padding:10px 15px;border-radius:10px;font-weight:800}.button.secondary{background:#1a2a42;color:var(--text);border:1px solid var(--line)}.summary{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin:22px 0 34px}.summary div{padding:20px;border:1px solid var(--line);border-radius:16px;background:#0c1829}.summary b{display:block;font-size:30px}.summary span{color:var(--muted)}section{margin-top:34px}.section-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px}h2{margin:0;font-size:23px}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:16px}.card{background:linear-gradient(145deg,#122238,#0c1829);border:1px solid var(--line);border-top:4px solid var(--red);border-radius:16px;padding:19px}.card.healthy{border-top-color:var(--green)}.card.waiting{border-top-color:var(--amber)}.card-head{display:flex;justify-content:space-between;gap:12px;align-items:start}.card h3{margin:0 0 4px;font-size:19px}.card a{color:#8dbaff;font-size:13px;word-break:break-all}.status{white-space:nowrap;padding:5px 9px;border-radius:99px;background:#3a1921;color:#ffb2b7;font-size:12px;font-weight:800}.healthy .status{background:#123729;color:#91ebbf}.waiting .status{background:#3a2d15;color:#f8d28b}.metrics{display:flex;gap:20px;margin:17px 0 7px;color:var(--muted)}.metrics b{color:var(--text)}.checks{display:grid;grid-template-columns:1fr 1fr;gap:7px 12px;list-style:none;padding:15px 0 0;margin:12px 0 0;border-top:1px solid var(--line)}.checks li{color:var(--muted);font-size:13px;text-transform:capitalize}.checks span{display:inline-grid;place-items:center;width:19px;height:19px;margin-right:7px;border-radius:50%;font-weight:900}.pass span{background:#174b36;color:#70e1ab}.fail span{background:#51242a;color:#ff9299}.message{color:var(--muted)}footer{margin-top:42px;color:var(--muted);text-align:center}@media(max-width:700px){header{align-items:start;flex-direction:column}.summary{grid-template-columns:1fr}.checks{grid-template-columns:1fr}}
@@ -59,7 +65,20 @@ function dashboard(siteReport, saasReport) {
   <div class="summary"><div><b>${online}</b><span>Online</span></div><div><b>${attention}</b><span>Need attention</span></div><div><b>${waiting}</b><span>Awaiting deployment</span></div></div>
   <section><div class="section-head"><h2>AdSense sites</h2><span>${sites.length} sites</span></div><div class="grid">${sites.map(card).join("") || "<p>No AdSense report yet.</p>"}</div></section>
   <section><div class="section-head"><h2>Raven-Sharp SaaS</h2><span>${apps.length} apps</span></div><div class="grid">${apps.map(card).join("") || "<p>No SaaS report yet.</p>"}</div></section>
-  <footer>Checks run automatically each day. â€œRun all checksâ€ uses one request per deployed site.</footer></main></body></html>`;
+  <section><div class="section-head"><h2>Page indexing</h2><span>${discovered} pages discovered</span></div>
+    <div class="grid">
+      <article class="card ${indexingReport.google_configured ? "healthy" : "waiting"}">
+        <div class="card-head"><div><h3>Google Search Console</h3><p class="message">${indexingReport.google_configured ? "Connected" : "Setup required: add the GSC service account secret"}</p></div><span class="status">${indexingReport.google_configured ? "Active" : "Setup required"}</span></div>
+        <div class="metrics"><span>Inspected <b>${inspected}</b></span><span>Indexed <b>${indexed}</b></span></div>
+        ${indexingReport.authentication_error ? `<p class="message">${escapeHtml(indexingReport.authentication_error)}</p>` : ""}
+      </article>
+      ${indexingSites.map(site => `<article class="card ${site.discovery_errors?.length ? "error" : "healthy"}"><div class="card-head"><div><h3>${escapeHtml(site.name)}</h3><a href="${escapeHtml(site.sitemap_urls?.[0] || site.url)}" target="_blank" rel="noreferrer">${escapeHtml(site.sitemap_urls?.[0] || "No sitemap found")}</a></div><span class="status">${site.discovered_count || 0} pages</span></div><div class="metrics"><span>Checked <b>${site.inspected_count || 0}</b></span><span>Indexed <b>${site.indexed_count || 0}</b></span></div></article>`).join("")}
+    </div>
+  </section>
+  <section><div class="section-head"><h2>Approval queue</h2><span>${repairItems.length} waiting</span></div>
+    <div class="grid">${repairItems.map(item => `<article class="card waiting"><div class="card-head"><div><h3>${escapeHtml(item.site)}</h3><p class="message">These changes require your approval before a repair pull request is created.</p></div><span class="status">Approval required</span></div><ul class="checks">${item.changes.map(change => `<li class="fail"><span>!</span>${escapeHtml(change)}</li>`).join("")}</ul></article>`).join("") || '<article class="card healthy"><div class="card-head"><div><h3>No changes waiting</h3><p class="message">Safe basic corrections run automatically. Redirects, canonical changes, and other consequential fixes wait for approval.</p></div><span class="status">Clear</span></div></article>'}</div>
+  </section>
+  <footer>Health checks, safe basic repairs, and page discovery run automatically. Consequential repairs require approval.</footer></main></body></html>`;
 }
 
 const html = value => new Response(value, { headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" } });
@@ -155,8 +174,9 @@ async function latest(env) {
   return report || { status: "no_report", message: "Run /run first" };
 }
 
-async function repair(env) {
-  const report = { run_at: new Date().toISOString(), results: await runRepairCycle(env.GITHUB_TOKEN) };
+async function repair(env, approved = false) {
+  const results = approved ? await runRepairCycle(env.GITHUB_TOKEN) : await runScheduledRepairCycle(env.GITHUB_TOKEN);
+  const report = { run_at: new Date().toISOString(), mode: approved ? "approved" : "scheduled_safe", results };
   if (env.MONITOR_KV) await env.MONITOR_KV.put("latest-repair-report-v1", JSON.stringify(report));
   return report;
 }
@@ -174,11 +194,13 @@ export default {
     if (url.pathname === "/health") return json({ ok: true, service: "adg-monitor-v4", github_configured: Boolean(env.GITHUB_TOKEN), saas_apps: SAAS_APPS.length });
     if (url.pathname === "/run") return json(await audit(env));
     if (url.pathname === "/run-all") {
-      const [sites, apps] = await Promise.all([audit(env), auditSaas(env)]);
-      return html(dashboard(sites, apps));
+      const [sites, apps, indexing, repairs] = await Promise.all([audit(env), auditSaas(env), latestIndexing(env), latestRepair(env)]);
+      return html(dashboard(sites, apps, indexing, repairs));
     }
-    if (url.pathname === "/report" || url.pathname === "/saas/report") return html(dashboard(await latest(env), await latestSaas(env)));
-    if (url.pathname === "/report.json") return json({ sites: await latest(env), saas: await latestSaas(env) });
+    if (url.pathname === "/report" || url.pathname === "/saas/report") return html(dashboard(await latest(env), await latestSaas(env), await latestIndexing(env), await latestRepair(env)));
+    if (url.pathname === "/report.json") return json({ sites: await latest(env), saas: await latestSaas(env), indexing: await latestIndexing(env), repairs: await latestRepair(env) });
+    if (url.pathname === "/indexing/run") return json(await auditIndexing(env, SITES));
+    if (url.pathname === "/indexing/report.json") return json(await latestIndexing(env));
     if (url.pathname === "/saas/run") return json(await auditSaas(env));
     if (url.pathname === "/saas/report.json") return json(await latestSaas(env));
     if (url.pathname === "/repair/report.json") return json(await latestRepair(env));
@@ -186,14 +208,18 @@ export default {
       if (!env.REPAIR_APPROVAL_KEY || request.headers.get("Authorization") !== `Bearer ${env.REPAIR_APPROVAL_KEY}`) {
         return json({ error: "Repair approval required" }, 403);
       }
-      return json(await repair(env));
+      return json(await repair(env, true));
     }
     if (url.pathname === "/") return Response.redirect(`${url.origin}/report`, 302);
-    return json({ service: "ADG Monitor v4", endpoints: ["/health", "/run-all", "/report", "/report.json", "/saas/run", "/saas/report.json", "POST /repair/run"] });
+    return json({ service: "ADG Monitor v4", endpoints: ["/health", "/run-all", "/report", "/report.json", "/indexing/run", "/indexing/report.json", "/saas/run", "/saas/report.json", "POST /repair/run"] });
   },
 
-  async scheduled(_event, env, ctx) {
-    ctx.waitUntil(Promise.all([audit(env), auditSaas(env), repair(env)]));
+  async scheduled(event, env, ctx) {
+    if (event.cron === "0 21 * * *") {
+      ctx.waitUntil(auditIndexing(env, SITES));
+      return;
+    }
+    ctx.waitUntil(Promise.all([audit(env), auditSaas(env), repair(env, false)]));
   }
 };
 
