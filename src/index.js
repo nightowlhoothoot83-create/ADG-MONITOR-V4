@@ -199,7 +199,10 @@ export default {
     }
     if (url.pathname === "/report" || url.pathname === "/saas/report") return html(dashboard(await latest(env), await latestSaas(env), await latestIndexing(env), await latestRepair(env)));
     if (url.pathname === "/report.json") return json({ sites: await latest(env), saas: await latestSaas(env), indexing: await latestIndexing(env), repairs: await latestRepair(env) });
-    if (url.pathname === "/indexing/run") return json(await auditIndexing(env, SITES));
+    if (url.pathname === "/indexing/run") {
+      const indexing = await auditIndexing(env, SITES);
+      return html(dashboard(await latest(env), await latestSaas(env), indexing, await latestRepair(env)));
+    }
     if (url.pathname === "/indexing/report.json") return json(await latestIndexing(env));
     if (url.pathname === "/saas/run") return json(await auditSaas(env));
     if (url.pathname === "/saas/report.json") return json(await latestSaas(env));
