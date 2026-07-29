@@ -205,6 +205,27 @@ export async function prepareRepairPullRequest(site, token) {
   return { site: site.id, status: "pr_opened", branch, pull_request: pull.html_url, changes: proposal.changes };
 }
 
+export async function runScheduledRepairCycle(token) {
+  const results = [];
+  for (const site of SITES) {
+    try {
+      const automatic = await applySafeRepairs(site, token);
+      const homepage = await getFile(site, "index.html", token);
+      const proposal = proposeHomepageRepairs(site, homepage.content);
+      results.push({
+        site: site.id,
+        automatic,
+        approval: proposal.changed
+          ? { status: "approval_required", changes: proposal.changes }
+          : { status: "clean", changes: [] }
+      });
+    } catch (error) {
+      results.push({ site: site.id, status: "error", message: error.message });
+    }
+  }
+  return results;
+}
+
 export async function runRepairCycle(token) {
   const results = [];
   for (const site of SITES) {
