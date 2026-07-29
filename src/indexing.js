@@ -154,11 +154,12 @@ async function nextInspectionBatch(env, site, pages) {
 }
 
 export async function auditIndexing(env, sites) {
-  const credentialsConfigured = Boolean(env.GSC_SERVICE_ACCOUNT_JSON);
+  const serviceAccount = env.GSC_SERVICE_ACCOUNT_JSON || env.GSC_SERVICE_ACCOUNT_KEY;
+  const credentialsConfigured = Boolean(serviceAccount);
   let accessToken = null;
   let authenticationError = null;
   if (credentialsConfigured) {
-    try { accessToken = await googleAccessToken(env.GSC_SERVICE_ACCOUNT_JSON); }
+    try { accessToken = await googleAccessToken(serviceAccount); }
     catch (error) { authenticationError = error.message; }
   }
   const results = [];
