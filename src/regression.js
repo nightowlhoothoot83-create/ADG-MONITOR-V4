@@ -3,15 +3,17 @@ const STATE_KEY = "anti-regression-state-v1";
 const REPORT_KEY = "latest-regression-report-v1";
 const PUBLISHER_ID = "pub-1904958390525375";
 
+// One canonical request per check keeps the full three-site audit below Worker subrequest limits.
+// Redirects are followed, so Cloudflare may resolve clean URLs to folder or .html pages.
 const ENDPOINTS = [
-  { id: "privacy", paths: ["/privacy", "/privacy/", "/privacy.html"], type: "html" },
-  { id: "terms", paths: ["/terms", "/terms/", "/terms.html"], type: "html" },
-  { id: "about", paths: ["/about", "/about/", "/about.html"], type: "html" },
-  { id: "contact", paths: ["/contact", "/contact/", "/contact.html"], type: "html" },
-  { id: "cookies", paths: ["/cookies", "/cookies/", "/cookies.html", "/cookie-policy", "/cookie-policy/"], type: "html" },
-  { id: "ads_txt", paths: ["/ads.txt"], type: "ads" },
-  { id: "robots_txt", paths: ["/robots.txt"], type: "robots" },
-  { id: "sitemap", paths: ["/sitemap.xml"], type: "sitemap" }
+  { id: "privacy", path: "/privacy", type: "html" },
+  { id: "terms", path: "/terms", type: "html" },
+  { id: "about", path: "/about", type: "html" },
+  { id: "contact", path: "/contact", type: "html" },
+  { id: "cookies", path: "/cookies", type: "html" },
+  { id: "ads_txt", path: "/ads.txt", type: "ads" },
+  { id: "robots_txt", path: "/robots.txt", type: "robots" },
+  { id: "sitemap", path: "/sitemap.xml", type: "sitemap" }
 ];
 
 async function readJson(env, key, fallback) {
@@ -31,25 +33,20 @@ function acceptableContent(type, text) {
 }
 
 async function checkEndpoint(site, endpoint) {
-  const attempts = [];
-  for (const path of endpoint.paths) {
-    const url = `${site.url}${path}`;
-    try {
-      const response = await fetch(url, {
-        redirect: "follow",
-        headers: { "User-Agent": "ADG-Monitor-v4-AntiRegression/1.0", "Cache-Control": "no-cache" }
-      });
-      const text = (await response.text()).slice(0, 250_000);
-      const finalHost = new URL(response.url).hostname;
-      const expectedHost = new URL(site.url).hostname;
-      const passed = response.ok && finalHost === expectedHost && acceptableContent(endpoint.type, text);
-      attempts.push({ path, http: response.status, final_url: response.url, passed });
-      if (passed) return { passed: true, matched_path: path, http: response.status, final_url: response.url };
-    } catch (error) {
-      attempts.push({ path, passed: false, error: error.message });
-    }
+  const url = `${site.url}${endpoint.path}`;
+  try {
+    const response = await fetch(url, {
+      redirect: "follow",
+      headers: { "User-Agent": "ADG-Monitor-v4-AntiRegression/1.0", "Cache-Control": "no-cache" }
+    });
+    const text = (await response.text()).slice(0, 250_000);
+    const finalHost = new URL(response.url).hostname;
+    const expectedHost = new URL(site.url).hostname;
+    const passed = response.ok && finalHost === expectedHost && acceptableContent(endpoint.type, text);
+    return { passed, requested_path: endpoint.path, http: response.status, final_url: response.url };
+  } catch (error) {
+    return { passed: false, requested_path: endpoint.path, error: error.message };
   }
-  return { passed: false, attempts };
 }
 
 async function checkHomepage(site) {
@@ -82,7 +79,6 @@ async function checkHomepage(site) {
 async function snapshotSite(site) {
   const homepage = await checkHomepage(site);
   const endpoints = {};
-  // Sequential requests avoid Worker subrequest bursts and make failures easier to attribute.
   for (const endpoint of ENDPOINTS) endpoints[endpoint.id] = await checkEndpoint(site, endpoint);
   return { id: site.id, name: site.name, url: site.url, homepage, endpoints };
 }
@@ -127,12 +123,15 @@ export async function auditRegressions(env, sites) {
 
   for (const site of sites) {
     const current = await snapshotSite(site);
-    const regressedChecks = compareKnownGood(baseline.sites?.[site.id], current);
+    const baselineSite = baseline.sites?.[site.id];
+    const baselineAvailable = Boolean(baselineSite);
+    const regressedChecks = compareKnownGood(baselineSite, current);
     const previous = previousState.sites?.[site.id] || {};
     const consecutiveFailures = regressedChecks.length ? (previous.consecutive_failures || 0) + 1 : 0;
     const confirmed = regressedChecks.length > 0 && consecutiveFailures >= 2;
 
     const state = {
+      baseline_available: baselineAvailable,
       consecutive_failures: consecutiveFailures,
       first_failed_at: regressedChecks.length ? previous.first_failed_at || now : null,
       last_failed_at: regressedChecks.length ? now : null,
@@ -140,10 +139,18 @@ export async function auditRegressions(env, sites) {
       confirmed
     };
     nextState.sites[site.id] = state;
-    snapshots.push({ ...current, regression: state, status: confirmed ? "regression_confirmed" : regressedChecks.length ? "recheck_required" : "clean" });
 
-    // Establish or refresh a known-good snapshot only when every critical check is healthy.
-    if (allCriticalPassed(current) && !regressedChecks.length) baseline.sites[site.id] = current;
+    const healthyNow = allCriticalPassed(current);
+    if (healthyNow && !regressedChecks.length) baseline.sites[site.id] = current;
+
+    const status = confirmed
+      ? "regression_confirmed"
+      : regressedChecks.length
+        ? "recheck_required"
+        : baselineAvailable || healthyNow
+          ? "clean"
+          : "baseline_pending";
+    snapshots.push({ ...current, regression: state, status });
   }
 
   baseline.version = 1;
@@ -151,10 +158,12 @@ export async function auditRegressions(env, sites) {
   const report = {
     version: 1,
     run_at: now,
+    request_budget: "27 live requests for three sites",
     policy: "Known-good baseline; regressions require two consecutive failures before confirmation",
     sites: snapshots,
     confirmed_count: snapshots.filter(site => site.regression.confirmed).length,
-    recheck_count: snapshots.filter(site => site.status === "recheck_required").length
+    recheck_count: snapshots.filter(site => site.status === "recheck_required").length,
+    baseline_pending_count: snapshots.filter(site => site.status === "baseline_pending").length
   };
 
   await Promise.all([
