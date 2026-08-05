@@ -26,6 +26,21 @@ const escapeHtml = value => String(value ?? "").replace(/[&<>"']/g, character =>
 
 const isMonitorError = value => /too many subrequests|worker invocation|internal error|binding.*unavailable/i.test(String(value || ""));
 
+function sameCanonical(left, right) {
+  try {
+    const normalize = value => {
+      const url = new URL(value);
+      url.hash = "";
+      url.hostname = url.hostname.toLowerCase();
+      if (url.pathname !== "/") url.pathname = url.pathname.replace(/\/$/, "");
+      return url.href;
+    };
+    return normalize(left) === normalize(right);
+  } catch {
+    return left === right;
+  }
+}
+
 function flattenChecks(checks = {}, prefix = "") {
   return Object.entries(checks).flatMap(([name, value]) => {
     const label = `${prefix}${name}`.replaceAll("_", " ");
@@ -95,7 +110,7 @@ function dashboard(siteReport, saasReport, indexingReport = {}, repairReport = {
       const allItems = [
         ...(site.discovery_errors || []).map(item => item.message),
         ...(site.live_audits || []).filter(item => !item.passed).flatMap(item => item.issues.map(issue => `${item.url}: ${issue}`)),
-        ...(site.inspections || []).filter(item => item.google_canonical && item.user_canonical && item.google_canonical !== item.user_canonical).map(item => `${item.url}: Google selected ${item.google_canonical}`)
+        ...(site.inspections || []).filter(item => item.google_canonical && item.user_canonical && !sameCanonical(item.google_canonical, item.user_canonical)).map(item => `${item.url}: Google selected ${item.google_canonical}`)
       ];
       const monitorErrors = allItems.filter(isMonitorError);
       const issueItems = allItems.filter(item => !isMonitorError(item));
