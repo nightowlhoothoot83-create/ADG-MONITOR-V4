@@ -4,7 +4,7 @@
   "main": "src/index.js",
   "compatibility_date": "2026-07-29",
   "observability": { "enabled": true },
-  "triggers": { "crons": ["0 20 * * *", "0 21 * * *", "0 22 * * *", "0 23 * * *"] },
+  "triggers": { "crons": ["0 20 * * *", "0 21 * * *", "0 23 * * *"] },
   "kv_namespaces": [
     { "binding": "MONITOR_KV", "id": "b0ccea6158eb468198c6b80bb2232250" }
   ]
