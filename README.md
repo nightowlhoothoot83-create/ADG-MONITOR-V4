@@ -44,6 +44,16 @@ Endpoints: `/saas/run` starts a manual SaaS check and `/saas/report` returns the
 - Redirect-like links, policy-link changes, canonical conflicts, and other consequential changes are placed in the dashboard approval queue.
 - Approved changes use the protected repair endpoint to create a reviewable GitHub pull request.
 
+### Approving queued repairs
+
+1. Open `/repair/scan` and review every proposed change.
+2. Select **Approve queued repairs**.
+3. Enter the value configured as the Worker's `REPAIR_APPROVAL_KEY` secret.
+4. The key is sent only in the `Authorization` header to `POST /repair/run`; it is not stored by the dashboard.
+5. Review and merge the resulting GitHub pull requests before Cloudflare Pages deploys them.
+
+If the secret value is no longer known, replace `REPAIR_APPROVAL_KEY` in the Worker's Cloudflare settings and use the new value. Cloudflare does not reveal an existing secret value.
+
 ## Required Cloudflare bindings
 
 - `MONITOR_KV`: existing `site-monitor-history` KV namespace

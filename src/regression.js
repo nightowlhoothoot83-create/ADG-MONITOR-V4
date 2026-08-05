@@ -14,6 +14,7 @@ const ENDPOINTS = [
   { id: "ads_txt", path: "/ads.txt", type: "ads" },
   { id: "robots_txt", path: "/robots.txt", type: "robots" },
   { id: "sitemap", path: "/sitemap.xml", type: "sitemap" }
+  ,{ id: "consent_script", path: "/cookie-consent.js", type: "consent" }
 ];
 
 async function readJson(env, key, fallback) {
@@ -29,6 +30,7 @@ function acceptableContent(type, text) {
   if (type === "ads") return text.includes(PUBLISHER_ID) && /google\.com/i.test(text);
   if (type === "robots") return /user-agent\s*:/i.test(text) && /sitemap\s*:/i.test(text);
   if (type === "sitemap") return /<urlset|<sitemapindex/i.test(text);
+  if (type === "consent") return /cookieConsent/i.test(text) && /(accept|granted)/i.test(text) && /(decline|denied)/i.test(text) && /(settings|preferences|reopen)/i.test(text);
   return /<html|<!doctype html/i.test(text) && text.replace(/<[^>]+>/g, " ").trim().length > 80;
 }
 
@@ -62,13 +64,15 @@ async function checkHomepage(site) {
       title: /<title>[\s\S]+?<\/title>/i.test(html),
       description: /<meta\b[^>]*name=["']description["']/i.test(html),
       canonical: /<link\b[^>]*rel=["']canonical["']/i.test(html),
+      canonical_target: canonicalMatches(html, response.url),
+      indexable: !/<meta\b[^>]*name=["']robots["'][^>]*content=["'][^"']*noindex/i.test(html),
       h1: /<h1\b/i.test(html),
       privacy_link: /href=["'][^"']*privacy/i.test(html),
       terms_link: /href=["'][^"']*terms/i.test(html),
       about_link: /href=["'][^"']*about/i.test(html),
       contact_link: /href=["'][^"']*contact/i.test(html),
       cookie_policy_link: /href=["'][^"']*(cookies|cookie-policy)/i.test(html),
-      consent_ui: /(cookie-consent|cookie banner|googlefc|privacy-messaging|consent)/i.test(html),
+      consent_ui: /<script\b[^>]*src=["'][^"']*cookie-consent\.js/i.test(html),
       adsense_identity: html.includes("ca-pub-1904958390525375")
     };
   } catch (error) {
@@ -76,17 +80,49 @@ async function checkHomepage(site) {
   }
 }
 
+function normalizedUrl(value) {
+  const url = new URL(value);
+  url.hash = "";
+  if (url.pathname !== "/") url.pathname = url.pathname.replace(/\/$/, "");
+  return url.href;
+}
+
+function canonicalMatches(html, pageUrl) {
+  const match = html.match(/<link\b[^>]*rel=["']canonical["'][^>]*href=["']([^"']+)["']/i)
+    || html.match(/<link\b[^>]*href=["']([^"']+)["'][^>]*rel=["']canonical["']/i);
+  if (!match) return false;
+  try { return normalizedUrl(new URL(match[1], pageUrl)) === normalizedUrl(pageUrl); }
+  catch { return false; }
+}
+
 async function snapshotSite(site) {
   const homepage = await checkHomepage(site);
+  const redirects = await checkRedirectPolicy(site);
   const endpoints = {};
   for (const endpoint of ENDPOINTS) endpoints[endpoint.id] = await checkEndpoint(site, endpoint);
-  return { id: site.id, name: site.name, url: site.url, homepage, endpoints };
+  return { id: site.id, name: site.name, url: site.url, homepage, redirects, endpoints };
+}
+
+async function checkRedirectPolicy(site) {
+  const expected = new URL(site.url);
+  const candidates = [`http://${expected.hostname}/`, `https://www.${expected.hostname.replace(/^www\./, "")}/`];
+  const results = await Promise.all(candidates.map(async requested => {
+    try {
+      const response = await fetch(requested, { redirect: "follow", headers: { "User-Agent": "ADG-Monitor-v4-Redirects/1.0", "Cache-Control": "no-cache" } });
+      const final = new URL(response.url);
+      return { requested, final_url: response.url, passed: response.ok && final.protocol === "https:" && final.hostname === expected.hostname && final.pathname === "/" };
+    } catch (error) { return { requested, passed: false, error: error.message }; }
+  }));
+  return { http_to_https: results[0].passed, www_to_non_www: results[1].passed, details: results };
 }
 
 function flattenPasses(snapshot) {
   const result = {};
   for (const [name, value] of Object.entries(snapshot.homepage || {})) {
     if (typeof value === "boolean") result[`homepage.${name}`] = value;
+  }
+  for (const [name, value] of Object.entries(snapshot.redirects || {})) {
+    if (typeof value === "boolean") result[`redirect.${name}`] = value;
   }
   for (const [name, value] of Object.entries(snapshot.endpoints || {})) result[`endpoint.${name}`] = Boolean(value?.passed);
   return result;
@@ -106,10 +142,11 @@ function allCriticalPassed(site) {
   const checks = flattenPasses(site);
   const critical = [
     "homepage.homepage_http_200", "homepage.correct_domain", "homepage.title", "homepage.description",
-    "homepage.canonical", "homepage.h1", "homepage.privacy_link", "homepage.terms_link",
-    "homepage.about_link", "homepage.contact_link", "homepage.cookie_policy_link",
+    "homepage.canonical", "homepage.canonical_target", "homepage.indexable", "homepage.h1", "homepage.privacy_link", "homepage.terms_link",
+    "homepage.about_link", "homepage.contact_link", "homepage.cookie_policy_link", "homepage.consent_ui",
+    "redirect.http_to_https", "redirect.www_to_non_www",
     "endpoint.privacy", "endpoint.terms", "endpoint.about", "endpoint.contact",
-    "endpoint.cookies", "endpoint.ads_txt", "endpoint.robots_txt", "endpoint.sitemap"
+    "endpoint.cookies", "endpoint.ads_txt", "endpoint.robots_txt", "endpoint.sitemap", "endpoint.consent_script"
   ];
   return critical.every(key => checks[key] === true);
 }
@@ -158,7 +195,7 @@ export async function auditRegressions(env, sites) {
   const report = {
     version: 1,
     run_at: now,
-    request_budget: "27 live requests for three sites",
+    request_budget: "36 live requests for three sites",
     policy: "Known-good baseline; regressions require two consecutive failures before confirmation",
     sites: snapshots,
     confirmed_count: snapshots.filter(site => site.regression.confirmed).length,

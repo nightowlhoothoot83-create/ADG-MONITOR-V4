@@ -3,7 +3,7 @@ const API = "https://api.github.com";
 export const SITES = [
   { id: "mycalctools", name: "MyCalcTools", url: "https://mycalctools.net", repo: "Mycalctools", policyStyle: "html" },
   { id: "mycalendartools", name: "MyCalendarTools", url: "https://mycalendartools.net", repo: "Mycalendartools", policyStyle: "folder" },
-  { id: "wheel", name: "Wheel Name Picker", url: "https://wheelnamepicker.com.au", repo: "Wheelnamepicker", policyStyle: "folder" }
+  { id: "wheel", name: "Wheel Name Picker", url: "https://wheelnamepicker.com.au", repo: "Wheelnamepicker", policyStyle: "html" }
 ];
 
 const OWNER = "nightowlhoothoot83-create";
