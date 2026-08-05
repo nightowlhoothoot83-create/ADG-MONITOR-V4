@@ -2,15 +2,6 @@ import { SITES, runRepairCycle, runScheduledRepairCycle } from "./repair.js";
 import { auditIndexing, latestIndexing } from "./indexing.js";
 import { auditRegressions, latestRegressionReport, resetRegressionBaseline } from "./regression.js";
 
-const SAAS_APPS = [
-  { id: "pod", name: "Raven-Sharp POD", repo: "Raven-Sharp-POD", url: "https://pod.raven-sharp.com", deployed: true },
-  { id: "image-optimiser", name: "Image Optimiser & Upscaler", repo: "raven-sharp-image-optimiser-and-upscaler", url: "https://opt.raven-sharp.com", deployed: true },
-  { id: "smart-cleaner", name: "Smart AI Cleaner", repo: "Raven-Sharp-Smart-AI-Cleaner", url: "https://cleaner.raven-sharp.com", deployed: true },
-  { id: "ad-manager", name: "Ad Manager", repo: "Raven-Sharp-Ad-Manager", url: "https://ads.raven-sharp.com", deployed: true },
-  { id: "book-creator", name: "Book Creator", repo: "Raven-Sharp-Book-Creator", url: "https://books.raven-sharp.com", deployed: true },
-  { id: "content-creator", name: "Content Creator", repo: "Raven-Sharp-Content-Creator", url: "https://content.raven-sharp.com", deployed: true }
-];
-
 const json = (value, status = 200) => new Response(JSON.stringify(value, null, 2), {
   status,
   headers: { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" }
@@ -79,14 +70,12 @@ function regressionCard(site) {
   </article>`;
 }
 
-function dashboard(siteReport, saasReport, indexingReport = {}, repairReport = {}, regressionReport = {}) {
+function dashboard(siteReport, indexingReport = {}, repairReport = {}, regressionReport = {}) {
   const sites = siteReport.sites || [];
-  const apps = saasReport.apps || [];
-  const all = [...sites, ...apps];
-  const online = all.filter(item => item.status === "up").length;
-  const waiting = all.filter(item => item.status === "awaiting_deployment").length;
-  const attention = all.length - online - waiting;
-  const lastRun = [siteReport.run_at, saasReport.run_at, indexingReport.run_at, repairReport.run_at, regressionReport.run_at].filter(Boolean).sort().at(-1);
+  const online = sites.filter(item => item.status === "up").length;
+  const waiting = sites.filter(item => item.status === "awaiting_deployment").length;
+  const attention = sites.length - online - waiting;
+  const lastRun = [siteReport.run_at, indexingReport.run_at, repairReport.run_at, regressionReport.run_at].filter(Boolean).sort().at(-1);
   const indexingSites = indexingReport.sites || [];
   const discovered = indexingSites.reduce((total, site) => total + (site.discovered_count || 0), 0);
   const inspected = indexingSites.reduce((total, site) => total + (site.inspected_count || 0), 0);
@@ -96,14 +85,13 @@ function dashboard(siteReport, saasReport, indexingReport = {}, repairReport = {
   const confirmedRegressions = regressionSites.filter(site => site.status === "regression_confirmed").length;
 
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>ADG Monitor V4</title><style>
+  <title>ADG AdSense Monitor</title><style>
   :root{color-scheme:dark;--bg:#07111f;--panel:#101d30;--line:#243650;--text:#f4f8ff;--muted:#9fb0c8;--green:#42d392;--amber:#f7bd58;--red:#ff6b75;--blue:#67a7ff}*{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at top,#142b4c 0,#07111f 48%);font:15px/1.5 system-ui,-apple-system,Segoe UI,sans-serif;color:var(--text)}main{width:min(1180px,calc(100% - 32px));margin:auto;padding:42px 0 70px}header{display:flex;justify-content:space-between;align-items:end;gap:20px;margin-bottom:24px}h1{font-size:clamp(30px,5vw,50px);line-height:1;margin:0 0 10px}.subtitle,.updated{color:var(--muted);margin:0}.actions{display:flex;gap:10px;flex-wrap:wrap}.button{background:var(--blue);color:#06101e;text-decoration:none;padding:10px 15px;border-radius:10px;font-weight:800}.button.secondary{background:#1a2a42;color:var(--text);border:1px solid var(--line)}.summary{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin:22px 0 34px}.summary div{padding:20px;border:1px solid var(--line);border-radius:16px;background:#0c1829}.summary b{display:block;font-size:30px}.summary span{color:var(--muted)}section{margin-top:34px}.section-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px}h2{margin:0;font-size:23px}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:16px}.card{background:linear-gradient(145deg,#122238,#0c1829);border:1px solid var(--line);border-top:4px solid var(--red);border-radius:16px;padding:19px}.card.healthy{border-top-color:var(--green)}.card.waiting{border-top-color:var(--amber)}.card-head{display:flex;justify-content:space-between;gap:12px;align-items:start}.card h3{margin:0 0 4px;font-size:19px}.card a{color:#8dbaff;font-size:13px;word-break:break-all}.status{white-space:nowrap;padding:5px 9px;border-radius:99px;background:#3a1921;color:#ffb2b7;font-size:12px;font-weight:800}.healthy .status{background:#123729;color:#91ebbf}.waiting .status{background:#3a2d15;color:#f8d28b}.metrics{display:flex;gap:20px;margin:17px 0 7px;color:var(--muted)}.metrics b{color:var(--text)}.checks{display:grid;grid-template-columns:1fr 1fr;gap:7px 12px;list-style:none;padding:15px 0 0;margin:12px 0 0;border-top:1px solid var(--line)}.checks li{color:var(--muted);font-size:13px;text-transform:capitalize}.checks span{display:inline-grid;place-items:center;width:19px;height:19px;margin-right:7px;border-radius:50%;font-weight:900}.pass span{background:#174b36;color:#70e1ab}.fail span{background:#51242a;color:#ff9299}.message{color:var(--muted)}footer{margin-top:42px;color:var(--muted);text-align:center}@media(max-width:800px){header{align-items:start;flex-direction:column}.summary{grid-template-columns:1fr 1fr}.checks{grid-template-columns:1fr}}@media(max-width:480px){.summary{grid-template-columns:1fr}}
-  </style></head><body><main><header><div><h1>ADG Monitor V4</h1><p class="subtitle">Separate AdSense, SaaS, indexing and controlled-repair monitors.</p></div><div class="actions"><a class="button" href="/adsense/run">Run AdSense monitor</a><a class="button secondary" href="/saas/run-view">Run SaaS monitor</a><a class="button secondary" href="/regression/run">Check regressions</a><a class="button secondary" href="/indexing/run">Index next site</a><a class="button secondary" href="/repair/scan">Check repairs</a><a class="button secondary" href="/report.json">Raw data</a></div></header>
+  </style></head><body><main><header><div><h1>ADG AdSense Monitor</h1><p class="subtitle">AdSense sites only: compliance, indexing, regression protection and controlled repairs.</p></div><div class="actions"><a class="button" href="/adsense/run">Run AdSense monitor</a><a class="button secondary" href="/regression/run">Check regressions</a><a class="button secondary" href="/indexing/run">Index next site</a><a class="button secondary" href="/repair/scan">Check repairs</a><a class="button secondary" href="/report.json">Raw data</a><a class="button secondary" href="https://adg-saas-monitor.ascensiondigitalagency.workers.dev/">Open SaaS monitor</a></div></header>
   <p class="updated">Last updated: ${lastRun ? escapeHtml(new Date(lastRun).toLocaleString("en-AU", { timeZone: "Australia/Brisbane", dateStyle: "medium", timeStyle: "short" })) : "No report yet"} Brisbane time</p>
   <div class="summary"><div><b>${online}</b><span>Online</span></div><div><b>${attention}</b><span>Need attention</span></div><div><b>${waiting}</b><span>Awaiting deployment</span></div><div><b>${confirmedRegressions}</b><span>Confirmed regressions</span></div></div>
   <section><div class="section-head"><h2>Anti-regression guard</h2><span>${regressionSites.length} protected sites</span></div><div class="grid">${regressionSites.map(regressionCard).join("") || '<article class="card waiting"><div class="card-head"><div><h3>No baseline report yet</h3><p class="message">Run the anti-regression check to establish healthy known-good snapshots.</p></div><span class="status">Not started</span></div></article>'}</div></section>
   <section><div class="section-head"><h2>AdSense sites</h2><span>${sites.length} sites</span></div><div class="grid">${sites.map(card).join("") || "<p>No AdSense report yet.</p>"}</div></section>
-  <section><div class="section-head"><h2>Raven-Sharp SaaS</h2><span>${apps.length} apps</span></div><div class="grid">${apps.map(card).join("") || "<p>No SaaS report yet.</p>"}</div></section>
   <section><div class="section-head"><h2>Page indexing</h2><span>${discovered} pages discovered</span></div><div class="actions" style="margin:0 0 14px">${SITES.map(site => `<a class="button secondary" href="/indexing/run?site=${encodeURIComponent(site.id)}">Check ${escapeHtml(site.name)}</a>`).join("")}</div><div class="grid">
     <article class="card ${indexingReport.google_configured ? "healthy" : "waiting"}"><div class="card-head"><div><h3>Google Search Console</h3><p class="message">${indexingReport.google_configured ? "Connected" : "Setup required: add the GSC service account secret"}</p></div><span class="status">${indexingReport.google_configured ? "Active" : "Setup required"}</span></div><div class="metrics"><span>Inspected <b>${inspected}</b></span><span>Indexed <b>${indexed}</b></span></div>${indexingReport.authentication_error ? `<p class="message">${escapeHtml(indexingReport.authentication_error)}</p>` : ""}</article>
     ${indexingSites.map(site => {
@@ -200,48 +188,6 @@ function canonicalMatches(html, pageUrl) {
   } catch { return false; }
 }
 
-async function checkSaas(app) {
-  if (!app.deployed) return { id: app.id, name: app.name, repo: `nightowlhoothoot83-create/${app.repo}`, expected_url: app.url, status: "awaiting_deployment" };
-  const started = Date.now();
-  try {
-    const response = await fetch(app.url, { redirect: "follow", headers: { "User-Agent": "ADG-SaaS-Monitor/1.0" } });
-    const contentType = response.headers.get("content-type") || "";
-    const html = contentType.includes("text/html") ? (await response.text()).slice(0, 1_000_000) : "";
-    return {
-      id: app.id, name: app.name, repo: `nightowlhoothoot83-create/${app.repo}`, url: app.url,
-      final_url: response.url, status: response.ok ? "up" : "error", http: response.status, response_ms: Date.now() - started,
-      checks: {
-        custom_domain: new URL(response.url).hostname.endsWith("raven-sharp.com"),
-        title: /<title>[\s\S]+?<\/title>/i.test(html),
-        description: /<meta\b[^>]*name=["']description["']/i.test(html),
-        login_or_account: /href=["'][^"']*(login|sign-in|account)/i.test(html),
-        pricing_or_checkout: /href=["'][^"']*(pricing|plans|checkout|subscribe)/i.test(html),
-        privacy: /href=["'][^"']*privacy/i.test(html),
-        terms: /href=["'][^"']*terms/i.test(html),
-        security_headers: {
-          content_security_policy: Boolean(response.headers.get("content-security-policy")),
-          frame_protection: Boolean(response.headers.get("x-frame-options") || response.headers.get("content-security-policy")?.includes("frame-ancestors")),
-          content_type_options: response.headers.get("x-content-type-options") === "nosniff",
-          referrer_policy: Boolean(response.headers.get("referrer-policy"))
-        }
-      }
-    };
-  } catch (error) {
-    return { id: app.id, name: app.name, repo: `nightowlhoothoot83-create/${app.repo}`, url: app.url, status: "error", message: error.message, response_ms: Date.now() - started };
-  }
-}
-
-async function auditSaas(env) {
-  const apps = await Promise.all(SAAS_APPS.map(checkSaas));
-  const report = { version: 1, run_at: new Date().toISOString(), call_policy: "one homepage request per deployed app per daily run", apps };
-  if (env.MONITOR_KV) await env.MONITOR_KV.put("latest-saas-report-v1", JSON.stringify(report));
-  return report;
-}
-
-async function latestSaas(env) {
-  return env.MONITOR_KV && await env.MONITOR_KV.get("latest-saas-report-v1", "json") || { status: "no_report", message: "Run /saas/run first" };
-}
-
 async function audit(env) {
   const sites = await Promise.all(SITES.map(checkSite));
   const report = { version: 5, run_at: new Date().toISOString(), sites };
@@ -279,7 +225,6 @@ function approved(request, env) {
 async function renderDashboard(env, overrides = {}) {
   return dashboard(
     overrides.sites || await latest(env),
-    overrides.saas || await latestSaas(env),
     overrides.indexing || await latestIndexing(env),
     overrides.repairs || await latestRepair(env),
     overrides.regressions || await latestRegressionReport(env)
@@ -289,14 +234,15 @@ async function renderDashboard(env, overrides = {}) {
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
-    if (url.pathname === "/health") return json({ ok: true, service: "adg-monitor-v4", github_configured: Boolean(env.GITHUB_TOKEN), anti_regression: true, saas_apps: SAAS_APPS.length });
+    if (url.pathname === "/health") return json({ ok: true, service: "adg-monitor-v4", monitor: "adsense-only", github_configured: Boolean(env.GITHUB_TOKEN), anti_regression: true, sites: SITES.length });
     if (url.pathname === "/run" || url.pathname === "/adsense/run") {
       const sites = await audit(env);
       return htmlResponse(await renderDashboard(env, { sites }));
     }
     if (url.pathname === "/run-all") return Response.redirect(`${url.origin}/report`, 302);
-    if (url.pathname === "/report" || url.pathname === "/saas/report") return htmlResponse(await renderDashboard(env));
-    if (url.pathname === "/report.json") return json({ sites: await latest(env), saas: await latestSaas(env), indexing: await latestIndexing(env), repairs: await latestRepair(env), regressions: await latestRegressionReport(env) });
+    if (url.pathname === "/report") return htmlResponse(await renderDashboard(env));
+    if (url.pathname.startsWith("/saas/")) return Response.redirect("https://adg-saas-monitor.ascensiondigitalagency.workers.dev/", 302);
+    if (url.pathname === "/report.json") return json({ sites: await latest(env), indexing: await latestIndexing(env), repairs: await latestRepair(env), regressions: await latestRegressionReport(env) });
     if (url.pathname === "/indexing/run") {
       const requestedSite = url.searchParams.get("site");
       const site = requestedSite ? SITES.find(item => item.id === requestedSite) : await nextIndexingSite(env);
@@ -305,12 +251,6 @@ export default {
       return htmlResponse(await renderDashboard(env, { indexing }));
     }
     if (url.pathname === "/indexing/report.json") return json(await latestIndexing(env));
-    if (url.pathname === "/saas/run") return json(await auditSaas(env));
-    if (url.pathname === "/saas/run-view") {
-      const saas = await auditSaas(env);
-      return htmlResponse(await renderDashboard(env, { saas }));
-    }
-    if (url.pathname === "/saas/report.json") return json(await latestSaas(env));
     if (url.pathname === "/repair/report.json") return json(await latestRepair(env));
     if (url.pathname === "/repair/scan") {
       const repairs = await repair(env, false);
@@ -330,16 +270,12 @@ export default {
       return json(await resetRegressionBaseline(env, SITES));
     }
     if (url.pathname === "/") return Response.redirect(`${url.origin}/report`, 302);
-    return json({ service: "ADG Monitor v4", endpoints: ["/health", "/adsense/run", "/saas/run-view", "/report", "/report.json", "/regression/run", "/regression/report.json", "POST /regression/baseline", "/indexing/run?site=mycalctools", "/indexing/report.json", "/saas/run", "/saas/report.json", "/repair/scan", "POST /repair/run"] });
+    return json({ service: "ADG AdSense Monitor", endpoints: ["/health", "/adsense/run", "/report", "/report.json", "/regression/run", "/regression/report.json", "POST /regression/baseline", "/indexing/run?site=mycalctools", "/indexing/report.json", "/repair/scan", "POST /repair/run"] });
   },
 
   async scheduled(event, env, ctx) {
     if (event.cron === "0 21 * * *") {
       ctx.waitUntil(nextIndexingSite(env).then(site => auditIndexing(env, [site])));
-      return;
-    }
-    if (event.cron === "0 22 * * *") {
-      ctx.waitUntil(auditSaas(env));
       return;
     }
     if (event.cron === "0 23 * * *") {
