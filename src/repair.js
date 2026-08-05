@@ -192,7 +192,7 @@ export async function prepareRepairPullRequest(site, token) {
   const proposal = proposeHomepageRepairs(site, homepage.content);
   if (!proposal.changed) return { site: site.id, status: "clean", changes: [] };
 
-  const branch = `adg-auto-repair-${new Date().toISOString().slice(0, 10).replace(/-/g, "")}`;
+  const timestamp = new Date().toISOString().replace(/\\D/g, "").slice(0, 14);\n  const branch = `adg-auto-repair-${timestamp}-${crypto.randomUUID().slice(0, 8)}`;
   try {
     await createBranch(site, token, branch);
   } catch (error) {
