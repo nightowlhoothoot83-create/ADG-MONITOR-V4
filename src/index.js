@@ -91,7 +91,7 @@ function dashboard(siteReport, indexingReport = {}, repairReport = {}, regressio
   <p class="updated">Last updated: ${lastRun ? escapeHtml(new Date(lastRun).toLocaleString("en-AU", { timeZone: "Australia/Brisbane", dateStyle: "medium", timeStyle: "short" })) : "No report yet"} Brisbane time</p>
   <div class="summary"><div><b>${online}</b><span>Online</span></div><div><b>${attention}</b><span>Need attention</span></div><div><b>${waiting}</b><span>Awaiting deployment</span></div><div><b>${confirmedRegressions}</b><span>Confirmed regressions</span></div></div>
   <section><div class="section-head"><h2>Anti-regression guard</h2><span>${regressionSites.length} protected sites</span></div><div class="grid">${regressionSites.map(regressionCard).join("") || '<article class="card waiting"><div class="card-head"><div><h3>No baseline report yet</h3><p class="message">Run the anti-regression check to establish healthy known-good snapshots.</p></div><span class="status">Not started</span></div></article>'}</div></section>
-  <section><div class="section-head"><h2>AdSense sites</h2><span>${sites.length} sites</span></div><div class="grid">${sites.map(card).join("") || "<p>No AdSense report yet.</p>"}</div></section>
+  <section><div class="section-head"><h2>Homepage health &amp; AdSense readiness</h2><span>${sites.length} homepages</span></div><div class="grid">${sites.map(card).join("") || "<p>No homepage report yet.</p>"}</div></section>
   <section><div class="section-head"><h2>Page indexing</h2><span>${discovered} pages discovered</span></div><div class="actions" style="margin:0 0 14px">${SITES.map(site => `<a class="button secondary" href="/indexing/run?site=${encodeURIComponent(site.id)}">Check ${escapeHtml(site.name)}</a>`).join("")}</div><div class="grid">
     <article class="card ${indexingReport.google_configured ? "healthy" : "waiting"}"><div class="card-head"><div><h3>Google Search Console</h3><p class="message">${indexingReport.google_configured ? "Connected" : "Setup required: add the GSC service account secret"}</p></div><span class="status">${indexingReport.google_configured ? "Active" : "Setup required"}</span></div><div class="metrics"><span>Inspected <b>${inspected}</b></span><span>Indexed <b>${indexed}</b></span></div>${indexingReport.authentication_error ? `<p class="message">${escapeHtml(indexingReport.authentication_error)}</p>` : ""}</article>
     ${indexingSites.map(site => {
@@ -136,9 +136,17 @@ function dashboard(siteReport, indexingReport = {}, repairReport = {}, regressio
 async function checkSite(site) {
   const started = Date.now();
   try {
-    const response = await fetch(site.url, { headers: { "User-Agent": "ADG-Monitor-v4/1.0" } });
+    const [response, adsResponse] = await Promise.all([
+      fetch(site.url, { headers: { "User-Agent": "ADG-Monitor-v4/1.1" } }),
+      fetch(new URL("/ads.txt", site.url), {
+        redirect: "follow",
+        headers: { "User-Agent": "ADG-Monitor-v4-AdsTxt/1.0", "Cache-Control": "no-cache" }
+      })
+    ]);
     const html = await response.text();
+    const adsText = await adsResponse.text();
     const checks = {
+        homepage_http_200: response.ok,
         title: /<title>[\s\S]+?<\/title>/i.test(html),
         description: /<meta\b[^>]*name=["']description["']/i.test(html),
         canonical: /<link\b[^>]*rel=["']canonical["']/i.test(html),
@@ -153,14 +161,19 @@ async function checkSite(site) {
         contact: /href=["'][^"']*contact/i.test(html),
         cookies: /href=["'][^"']*(cookies|cookie-policy)/i.test(html),
         consent_ui: /<script\b[^>]*src=["'][^"']*cookie-consent\.js/i.test(html),
+        ads_txt_http_200: adsResponse.ok,
+        ads_txt_plain_text: /text\/plain/i.test(adsResponse.headers.get("content-type") || ""),
+        ads_txt_publisher: /google\.com\s*,\s*pub-1904958390525375\s*,\s*DIRECT\s*,\s*f08c47fec0942fa0/i.test(adsText),
         suspicious_links: (html.match(/<a\b[^>]*href=["']#["'][^>]*>/gi) || []).length
       };
-    const criticalPassed = response.ok && ["title", "description", "canonical", "canonical_target", "indexable", "redirect_target", "h1", "privacy", "terms", "about", "contact", "cookies", "consent_ui"].every(name => checks[name] === true);
+    const criticalPassed = response.ok && ["homepage_http_200", "title", "description", "canonical", "canonical_target", "indexable", "redirect_target", "h1", "privacy", "terms", "about", "contact", "cookies", "consent_ui", "ads_txt_http_200", "ads_txt_plain_text", "ads_txt_publisher"].every(name => checks[name] === true);
     return {
       id: site.id,
       name: site.name,
       url: site.url,
       final_url: response.url,
+      ads_txt_url: adsResponse.url,
+      ads_txt_http: adsResponse.status,
       status: criticalPassed ? "up" : "error",
       http: response.status,
       response_ms: Date.now() - started,
