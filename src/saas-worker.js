@@ -63,6 +63,8 @@ async function check(app) {
     const html = contentType.includes("text/html") ? (await response.text()).slice(0, 1_000_000) : "";
     const copy = textOnly(html);
     const wordCount = copy ? copy.split(/\s+/).length : 0;
+    const scriptCount = count(html, /<script\b[^>]*src=/gi);
+    const clientRenderedShell = wordCount < 120 && scriptCount > 0;
     const h1Count = count(html, /<h1\b/gi);
     const sectionCount = count(html, /<(?:section|article)\b/gi);
     const imageCount = count(html, /<img\b/gi);
@@ -101,6 +103,8 @@ async function check(app) {
     ]);
     const issues = [];
     if (!response.ok) issues.push(issue("critical", "availability", `Homepage returned HTTP ${response.status}.`, "Restore the production homepage before testing other checks."));
+    if (clientRenderedShell) issues.push(issue("warning", "crawlability", `The initial HTML is a JavaScript shell with only about ${wordCount} words; visible content requires browser rendering.`, "Server-render the public product overview, navigation, pricing summary and policy footer so crawlers and link checkers receive meaningful content without executing JavaScript."));
+    if (!clientRenderedShell) {
     if (wordCount < 120) issues.push(issue("critical", "content", `Homepage has only about ${wordCount} machine-readable words.`, "Add a public product overview, key benefits, how it works, use cases, pricing summary and FAQ before the sign-in form."));
     else if (wordCount < 250) issues.push(issue("warning", "content", `Homepage content is thin at about ${wordCount} words.`, "Expand the public explanation with workflow steps, use cases, feature details and FAQs."));
     if (h1Count !== 1) issues.push(issue("warning", "structure", `Expected one H1 but found ${h1Count}.`, "Use one descriptive product H1 and move secondary headings to H2/H3."));
@@ -114,6 +118,7 @@ async function check(app) {
     if (suiteLinks < 3) issues.push(issue("warning", "suite consistency", `Only ${suiteLinks} direct links to other Raven Sharp SaaS tools were detected.`, "Add a shared Tools or Explore the Suite menu linking the hub and all six SaaS products."));
     if (imageCount && missingAltCount) issues.push(issue("warning", "accessibility", `${missingAltCount} of ${imageCount} images appear to lack useful alt text.`, "Add concise alt text to meaningful images and empty alt text to decorative images."));
     if (formCount && inputCount > labelCount) issues.push(issue("warning", "accessibility", `${inputCount} form controls but only ${labelCount} labels were detected.`, "Give every input a visible label or an accessible aria-label."));
+    }
     for (const [name, passed] of Object.entries(security)) if (!passed) issues.push(issue(name === "content_security_policy" || name === "frame_protection" ? "critical" : "warning", "security", `${name.replaceAll("_", " ")} header is missing.`, "Apply the shared Raven Sharp security-header policy at the deployment edge."));
     for (const [name, passed] of Object.entries(seo)) if (!passed) issues.push(issue(name === "description" || name === "canonical" ? "warning" : "info", "discoverability", `${name.replaceAll("_", " ")} metadata is missing or incomplete.`, "Add this field to the shared document head template."));
     routes.filter(route => !route.passed).forEach(route => issues.push(issue("critical", "route test", `${route.path} failed${route.status ? ` with HTTP ${route.status}` : ""}.`, "Repair or remove the broken public navigation target.")));
@@ -121,7 +126,7 @@ async function check(app) {
     if (!healthyApi) issues.push(issue("warning", "API testing", "No non-destructive JSON health endpoint was found.", "Add an authenticated or public read-only /api/health endpoint that verifies configuration and upstream connectivity without generating content or charging providers."));
     const deductions = issues.reduce((total, item) => total + ({ critical: 12, warning: 5, info: 2 }[item.severity] || 0), 0);
     const score = Math.max(0, 100 - deductions);
-    return { ...app, final_url: response.url, status: response.ok ? "up" : "error", http: response.status, response_ms: Date.now() - started, score, metrics: { word_count: wordCount, h1_count: h1Count, section_count: sectionCount, forms: formCount, inputs: inputCount, images: imageCount, missing_alt: missingAltCount, brand_links: siblingLinks, suite_links: suiteLinks }, checks: { policy, account, pricing, primary_action: primaryAction, raven_sharp_hub: hubLink, suite_branding: suiteBranding, seo, security }, routes, api_probes, api_health: healthyApi || null, issues };
+    return { ...app, final_url: response.url, status: response.ok ? "up" : "error", http: response.status, response_ms: Date.now() - started, score, metrics: { word_count: wordCount, client_rendered_shell: clientRenderedShell, script_count: scriptCount, h1_count: h1Count, section_count: sectionCount, forms: formCount, inputs: inputCount, images: imageCount, missing_alt: missingAltCount, brand_links: siblingLinks, suite_links: suiteLinks }, checks: { policy, account, pricing, primary_action: primaryAction, raven_sharp_hub: hubLink, suite_branding: suiteBranding, seo, security }, routes, api_probes, api_health: healthyApi || null, issues };
   } catch (error) {
     return { ...app, status: "error", message: error.message, response_ms: Date.now() - started };
   }
