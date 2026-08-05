@@ -22,7 +22,7 @@ function sameCanonical(left, right) {
     const normalize = value => {
       const url = new URL(value);
       url.hash = "";
-      url.hostname = url.hostname.toLowerCase();
+      url.hostname = url.hostname.toLowerCase().replace(/^www\./, "");
       if (url.pathname !== "/") url.pathname = url.pathname.replace(/\/$/, "");
       return url.href;
     };
