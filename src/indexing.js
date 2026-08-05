@@ -3,8 +3,11 @@ const INSPECTION_URL = "https://searchconsole.googleapis.com/v1/urlInspection/in
 const WEBMASTERS_API = "https://www.googleapis.com/webmasters/v3";
 const MAX_SITEMAPS_PER_SITE = 5;
 const MAX_PAGES_PER_SITE = 100;
-const INSPECTIONS_PER_SITE_PER_RUN = 3;
-const LIVE_AUDITS_PER_SITE_PER_RUN = 8;
+// Keep a targeted run comfortably below the Workers subrequest ceiling. A
+// sitemap URL can redirect before its HTML is fetched, so each live audit may
+// consume more than one subrequest.
+const INSPECTIONS_PER_SITE_PER_RUN = 2;
+const LIVE_AUDITS_PER_SITE_PER_RUN = 4;
 const MAX_TEXT_BYTES = 1_000_000;
 
 const encoder = new TextEncoder();
