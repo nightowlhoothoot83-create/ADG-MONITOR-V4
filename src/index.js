@@ -24,6 +24,8 @@ const escapeHtml = value => String(value ?? "").replace(/[&<>"']/g, character =>
   "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#039;"
 }[character]));
 
+const isMonitorError = value => /too many subrequests|worker invocation|internal error|binding.*unavailable/i.test(String(value || ""));
+
 function flattenChecks(checks = {}, prefix = "") {
   return Object.entries(checks).flatMap(([name, value]) => {
     const label = `${prefix}${name}`.replaceAll("_", " ");
@@ -39,7 +41,7 @@ function card(item) {
   const target = item.url || item.expected_url;
   const checks = flattenChecks(item.checks).map(check => {
     const passed = typeof check.value === "number" ? check.value === 0 : Boolean(check.value);
-    return `<li class="${passed ? "pass" : "fail"}"><span>${passed ? "✓" : "!"}</span>${escapeHtml(check.label)}</li>`;
+    return `<li class="${passed ? "pass" : "fail"}"><span>${passed ? "âœ“" : "!"}</span>${escapeHtml(check.label)}</li>`;
   }).join("");
   return `<article class="card ${tone}">
     <div class="card-head"><div><h3>${escapeHtml(item.name)}</h3><a href="${escapeHtml(target)}" target="_blank" rel="noreferrer">${escapeHtml(target)}</a></div><span class="status">${label}</span></div>
@@ -81,22 +83,24 @@ function dashboard(siteReport, saasReport, indexingReport = {}, repairReport = {
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
   <title>ADG Monitor V4</title><style>
   :root{color-scheme:dark;--bg:#07111f;--panel:#101d30;--line:#243650;--text:#f4f8ff;--muted:#9fb0c8;--green:#42d392;--amber:#f7bd58;--red:#ff6b75;--blue:#67a7ff}*{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at top,#142b4c 0,#07111f 48%);font:15px/1.5 system-ui,-apple-system,Segoe UI,sans-serif;color:var(--text)}main{width:min(1180px,calc(100% - 32px));margin:auto;padding:42px 0 70px}header{display:flex;justify-content:space-between;align-items:end;gap:20px;margin-bottom:24px}h1{font-size:clamp(30px,5vw,50px);line-height:1;margin:0 0 10px}.subtitle,.updated{color:var(--muted);margin:0}.actions{display:flex;gap:10px;flex-wrap:wrap}.button{background:var(--blue);color:#06101e;text-decoration:none;padding:10px 15px;border-radius:10px;font-weight:800}.button.secondary{background:#1a2a42;color:var(--text);border:1px solid var(--line)}.summary{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin:22px 0 34px}.summary div{padding:20px;border:1px solid var(--line);border-radius:16px;background:#0c1829}.summary b{display:block;font-size:30px}.summary span{color:var(--muted)}section{margin-top:34px}.section-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px}h2{margin:0;font-size:23px}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:16px}.card{background:linear-gradient(145deg,#122238,#0c1829);border:1px solid var(--line);border-top:4px solid var(--red);border-radius:16px;padding:19px}.card.healthy{border-top-color:var(--green)}.card.waiting{border-top-color:var(--amber)}.card-head{display:flex;justify-content:space-between;gap:12px;align-items:start}.card h3{margin:0 0 4px;font-size:19px}.card a{color:#8dbaff;font-size:13px;word-break:break-all}.status{white-space:nowrap;padding:5px 9px;border-radius:99px;background:#3a1921;color:#ffb2b7;font-size:12px;font-weight:800}.healthy .status{background:#123729;color:#91ebbf}.waiting .status{background:#3a2d15;color:#f8d28b}.metrics{display:flex;gap:20px;margin:17px 0 7px;color:var(--muted)}.metrics b{color:var(--text)}.checks{display:grid;grid-template-columns:1fr 1fr;gap:7px 12px;list-style:none;padding:15px 0 0;margin:12px 0 0;border-top:1px solid var(--line)}.checks li{color:var(--muted);font-size:13px;text-transform:capitalize}.checks span{display:inline-grid;place-items:center;width:19px;height:19px;margin-right:7px;border-radius:50%;font-weight:900}.pass span{background:#174b36;color:#70e1ab}.fail span{background:#51242a;color:#ff9299}.message{color:var(--muted)}footer{margin-top:42px;color:var(--muted);text-align:center}@media(max-width:800px){header{align-items:start;flex-direction:column}.summary{grid-template-columns:1fr 1fr}.checks{grid-template-columns:1fr}}@media(max-width:480px){.summary{grid-template-columns:1fr}}
-  </style></head><body><main><header><div><h1>ADG Monitor V4</h1><p class="subtitle">Health checks, controlled repairs, indexing and anti-regression protection.</p></div><div class="actions"><a class="button" href="/run-all">Run all checks</a><a class="button secondary" href="/regression/run">Check regressions</a><a class="button secondary" href="/indexing/run">Check indexing</a><a class="button secondary" href="/repair/scan">Check repairs</a><a class="button secondary" href="/report.json">Raw data</a></div></header>
+  </style></head><body><main><header><div><h1>ADG Monitor V4</h1><p class="subtitle">Separate AdSense, SaaS, indexing and controlled-repair monitors.</p></div><div class="actions"><a class="button" href="/adsense/run">Run AdSense monitor</a><a class="button secondary" href="/saas/run-view">Run SaaS monitor</a><a class="button secondary" href="/regression/run">Check regressions</a><a class="button secondary" href="/indexing/run">Index next site</a><a class="button secondary" href="/repair/scan">Check repairs</a><a class="button secondary" href="/report.json">Raw data</a></div></header>
   <p class="updated">Last updated: ${lastRun ? escapeHtml(new Date(lastRun).toLocaleString("en-AU", { timeZone: "Australia/Brisbane", dateStyle: "medium", timeStyle: "short" })) : "No report yet"} Brisbane time</p>
   <div class="summary"><div><b>${online}</b><span>Online</span></div><div><b>${attention}</b><span>Need attention</span></div><div><b>${waiting}</b><span>Awaiting deployment</span></div><div><b>${confirmedRegressions}</b><span>Confirmed regressions</span></div></div>
   <section><div class="section-head"><h2>Anti-regression guard</h2><span>${regressionSites.length} protected sites</span></div><div class="grid">${regressionSites.map(regressionCard).join("") || '<article class="card waiting"><div class="card-head"><div><h3>No baseline report yet</h3><p class="message">Run the anti-regression check to establish healthy known-good snapshots.</p></div><span class="status">Not started</span></div></article>'}</div></section>
   <section><div class="section-head"><h2>AdSense sites</h2><span>${sites.length} sites</span></div><div class="grid">${sites.map(card).join("") || "<p>No AdSense report yet.</p>"}</div></section>
   <section><div class="section-head"><h2>Raven-Sharp SaaS</h2><span>${apps.length} apps</span></div><div class="grid">${apps.map(card).join("") || "<p>No SaaS report yet.</p>"}</div></section>
-  <section><div class="section-head"><h2>Page indexing</h2><span>${discovered} pages discovered</span></div><div class="grid">
+  <section><div class="section-head"><h2>Page indexing</h2><span>${discovered} pages discovered</span></div><div class="actions" style="margin:0 0 14px">${SITES.map(site => `<a class="button secondary" href="/indexing/run?site=${encodeURIComponent(site.id)}">Check ${escapeHtml(site.name)}</a>`).join("")}</div><div class="grid">
     <article class="card ${indexingReport.google_configured ? "healthy" : "waiting"}"><div class="card-head"><div><h3>Google Search Console</h3><p class="message">${indexingReport.google_configured ? "Connected" : "Setup required: add the GSC service account secret"}</p></div><span class="status">${indexingReport.google_configured ? "Active" : "Setup required"}</span></div><div class="metrics"><span>Inspected <b>${inspected}</b></span><span>Indexed <b>${indexed}</b></span></div>${indexingReport.authentication_error ? `<p class="message">${escapeHtml(indexingReport.authentication_error)}</p>` : ""}</article>
     ${indexingSites.map(site => {
-      const issueCount = (site.discovery_errors?.length || 0) + (site.live_issue_count || 0) + (site.canonical_conflict_count || 0);
-      const issueItems = [
+      const allItems = [
         ...(site.discovery_errors || []).map(item => item.message),
         ...(site.live_audits || []).filter(item => !item.passed).flatMap(item => item.issues.map(issue => `${item.url}: ${issue}`)),
         ...(site.inspections || []).filter(item => item.google_canonical && item.user_canonical && item.google_canonical !== item.user_canonical).map(item => `${item.url}: Google selected ${item.google_canonical}`)
-      ].slice(0, 8);
-      return `<article class="card ${issueCount ? "error" : "healthy"}"><div class="card-head"><div><h3>${escapeHtml(site.name)}</h3><a href="${escapeHtml(site.sitemap_urls?.[0] || site.url)}" target="_blank" rel="noreferrer">${escapeHtml(site.sitemap_urls?.[0] || "No sitemap found")}</a></div><span class="status">${issueCount ? `${issueCount} issue(s)` : `${site.discovered_count || 0} pages`}</span></div><div class="metrics"><span>Google checked <b>${site.inspected_count || 0}</b></span><span>Indexed <b>${site.indexed_count || 0}</b></span><span>Live audited <b>${site.live_audited_count || 0}</b></span></div>${issueItems.length ? `<ul class="checks">${issueItems.map(issue => `<li class="fail"><span>!</span>${escapeHtml(issue)}</li>`).join("")}</ul>` : ""}</article>`;
+      ];
+      const monitorErrors = allItems.filter(isMonitorError);
+      const issueItems = allItems.filter(item => !isMonitorError(item));
+      const issueCount = issueItems.length;
+      return `<article class="card ${issueCount ? "error" : monitorErrors.length ? "waiting" : "healthy"}"><div class="card-head"><div><h3>${escapeHtml(site.name)}</h3><a href="${escapeHtml(site.sitemap_urls?.[0] || site.url)}" target="_blank" rel="noreferrer">${escapeHtml(site.sitemap_urls?.[0] || "No sitemap found")}</a></div><span class="status">${issueCount ? `${issueCount} site issue(s)` : monitorErrors.length ? `${monitorErrors.length} monitor error(s)` : `${site.discovered_count || 0} pages`}</span></div><div class="metrics"><span>Google checked <b>${site.inspected_count || 0}</b></span><span>Indexed <b>${site.indexed_count || 0}</b></span><span>Live audited <b>${site.live_audited_count || 0}</b></span></div>${monitorErrors.length ? `<p class="message">Monitor execution error: ${escapeHtml(monitorErrors[0])}</p>` : ""}${issueItems.length ? `<ul class="checks">${issueItems.slice(0, 8).map(issue => `<li class="fail"><span>!</span>${escapeHtml(issue)}</li>`).join("")}</ul>` : ""}</article>`;
     }).join("")}
   </div></section>
   <section><div class="section-head"><h2>Approval queue</h2><span>${repairItems.length} waiting</span></div>${repairItems.length ? '<div class="actions" style="margin:0 0 14px"><button class="button" type="button" id="approve-repairs">Approve queued repairs</button><span id="approval-status" class="message" role="status"></span></div>' : ''}<div class="grid">${repairItems.map(item => `<article class="card waiting"><div class="card-head"><div><h3>${escapeHtml(item.site)}</h3><p class="message">These changes require your approval before a repair pull request is created.</p></div><span class="status">Approval required</span></div><ul class="checks">${item.changes.map(change => `<li class="fail"><span>!</span>${escapeHtml(change)}</li>`).join("")}</ul></article>`).join("") || '<article class="card healthy"><div class="card-head"><div><h3>No changes waiting</h3><p class="message">Safe basic corrections run automatically. Consequential fixes wait for approval.</p></div><span class="status">Clear</span></div></article>'}</div></section>
@@ -110,12 +114,12 @@ function dashboard(siteReport, saasReport, indexingReport = {}, repairReport = {
       const key = window.prompt('Enter the ADG Monitor repair approval key. It is sent only to this Worker and is not saved in the page.');
       if (!key) return;
       button.disabled = true;
-      status.textContent = 'Submitting approved repairs…';
+      status.textContent = 'Submitting approved repairsâ€¦';
       try {
         const response = await fetch('/repair/run', { method: 'POST', headers: { Authorization: 'Bearer ' + key } });
         const result = await response.json();
         if (!response.ok) throw new Error(result.error || 'Approval failed');
-        status.textContent = 'Approved. Repair pull requests have been prepared; refreshing the report…';
+        status.textContent = 'Approved. Repair pull requests have been prepared; refreshing the reportâ€¦';
         window.setTimeout(() => window.location.assign('/repair/scan'), 1200);
       } catch (error) {
         status.textContent = error.message;
@@ -245,6 +249,14 @@ async function latestRepair(env) {
   return env.MONITOR_KV && await env.MONITOR_KV.get("latest-repair-report-v1", "json") || { status: "no_report", message: "No repair cycle has run yet" };
 }
 
+async function nextIndexingSite(env) {
+  const key = "indexing-site-cursor-v1";
+  const prior = Number(await env.MONITOR_KV?.get(key) || 0);
+  const site = SITES[prior % SITES.length];
+  await env.MONITOR_KV?.put(key, String((prior + 1) % SITES.length));
+  return site;
+}
+
 function approved(request, env) {
   return Boolean(env.REPAIR_APPROVAL_KEY) && request.headers.get("Authorization") === `Bearer ${env.REPAIR_APPROVAL_KEY}`;
 }
@@ -263,19 +275,26 @@ export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
     if (url.pathname === "/health") return json({ ok: true, service: "adg-monitor-v4", github_configured: Boolean(env.GITHUB_TOKEN), anti_regression: true, saas_apps: SAAS_APPS.length });
-    if (url.pathname === "/run") return json(await audit(env));
-    if (url.pathname === "/run-all") {
-      const [sites, apps, regressions] = await Promise.all([audit(env), auditSaas(env), auditRegressions(env, SITES)]);
-      return htmlResponse(await renderDashboard(env, { sites, saas: apps, regressions }));
+    if (url.pathname === "/run" || url.pathname === "/adsense/run") {
+      const sites = await audit(env);
+      return htmlResponse(await renderDashboard(env, { sites }));
     }
+    if (url.pathname === "/run-all") return Response.redirect(`${url.origin}/report`, 302);
     if (url.pathname === "/report" || url.pathname === "/saas/report") return htmlResponse(await renderDashboard(env));
     if (url.pathname === "/report.json") return json({ sites: await latest(env), saas: await latestSaas(env), indexing: await latestIndexing(env), repairs: await latestRepair(env), regressions: await latestRegressionReport(env) });
     if (url.pathname === "/indexing/run") {
-      const indexing = await auditIndexing(env, SITES);
+      const requestedSite = url.searchParams.get("site");
+      const site = requestedSite ? SITES.find(item => item.id === requestedSite) : await nextIndexingSite(env);
+      if (!site) return json({ error: "Unknown AdSense site", valid_sites: SITES.map(item => item.id) }, 400);
+      const indexing = await auditIndexing(env, [site]);
       return htmlResponse(await renderDashboard(env, { indexing }));
     }
     if (url.pathname === "/indexing/report.json") return json(await latestIndexing(env));
     if (url.pathname === "/saas/run") return json(await auditSaas(env));
+    if (url.pathname === "/saas/run-view") {
+      const saas = await auditSaas(env);
+      return htmlResponse(await renderDashboard(env, { saas }));
+    }
     if (url.pathname === "/saas/report.json") return json(await latestSaas(env));
     if (url.pathname === "/repair/report.json") return json(await latestRepair(env));
     if (url.pathname === "/repair/scan") {
@@ -296,14 +315,23 @@ export default {
       return json(await resetRegressionBaseline(env, SITES));
     }
     if (url.pathname === "/") return Response.redirect(`${url.origin}/report`, 302);
-    return json({ service: "ADG Monitor v4", endpoints: ["/health", "/run-all", "/report", "/report.json", "/regression/run", "/regression/report.json", "POST /regression/baseline", "/indexing/run", "/indexing/report.json", "/saas/run", "/saas/report.json", "/repair/scan", "POST /repair/run"] });
+    return json({ service: "ADG Monitor v4", endpoints: ["/health", "/adsense/run", "/saas/run-view", "/report", "/report.json", "/regression/run", "/regression/report.json", "POST /regression/baseline", "/indexing/run?site=mycalctools", "/indexing/report.json", "/saas/run", "/saas/report.json", "/repair/scan", "POST /repair/run"] });
   },
 
   async scheduled(event, env, ctx) {
     if (event.cron === "0 21 * * *") {
-      ctx.waitUntil(auditIndexing(env, SITES));
+      ctx.waitUntil(nextIndexingSite(env).then(site => auditIndexing(env, [site])));
       return;
     }
-    ctx.waitUntil(Promise.all([audit(env), auditSaas(env), repair(env, false), auditRegressions(env, SITES)]));
+    if (event.cron === "0 22 * * *") {
+      ctx.waitUntil(auditSaas(env));
+      return;
+    }
+    if (event.cron === "0 23 * * *") {
+      ctx.waitUntil(repair(env, false));
+      return;
+    }
+    ctx.waitUntil(Promise.all([audit(env), auditRegressions(env, SITES)]));
   }
 };
+
