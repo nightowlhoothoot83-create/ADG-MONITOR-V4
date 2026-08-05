@@ -7,7 +7,7 @@ const MAX_PAGES_PER_SITE = 100;
 // sitemap URL can redirect before its HTML is fetched, so each live audit may
 // consume more than one subrequest.
 const INSPECTIONS_PER_SITE_PER_RUN = 2;
-const LIVE_AUDITS_PER_SITE_PER_RUN = 4;
+const LIVE_AUDITS_PER_SITE_PER_RUN = 1;
 const MAX_TEXT_BYTES = 1_000_000;
 
 const encoder = new TextEncoder();
@@ -203,14 +203,14 @@ async function inspectUrl(site, pageUrl, accessToken) {
   };
 }
 
-async function nextInspectionBatch(env, site, pages) {
+async function nextRotatingBatch(env, site, pages, count, cursorName) {
   if (!pages.length) return [];
-  const key = `indexing-cursor-v1:${site.id}`;
+  const key = `${cursorName}:${site.id}`;
   const prior = Number(await env.MONITOR_KV?.get(key) || 0);
   const start = prior % pages.length;
-  const count = Math.min(INSPECTIONS_PER_SITE_PER_RUN, pages.length);
-  const batch = Array.from({ length: count }, (_, offset) => pages[(start + offset) % pages.length]);
-  await env.MONITOR_KV?.put(key, String((start + count) % pages.length));
+  const batchSize = Math.min(count, pages.length);
+  const batch = Array.from({ length: batchSize }, (_, offset) => pages[(start + offset) % pages.length]);
+  await env.MONITOR_KV?.put(key, String((start + batchSize) % pages.length));
   return batch;
 }
 
@@ -238,14 +238,14 @@ export async function auditIndexing(env, sites, { merge = sites.length === 1 } =
       inspected_count: 0, indexed_count: 0, not_indexed_count: 0, inspections: [],
       live_audited_count: 0, live_issue_count: 0, live_audits: []
     };
-    const liveBatch = discovery.discovered_pages.slice(0, LIVE_AUDITS_PER_SITE_PER_RUN);
+    const liveBatch = await nextRotatingBatch(env, site, discovery.discovered_pages, LIVE_AUDITS_PER_SITE_PER_RUN, "live-audit-cursor-v1");
     entry.live_audits = await Promise.all(liveBatch.map(auditPage));
     entry.live_audited_count = entry.live_audits.length;
     entry.live_issue_count = entry.live_audits.filter(item => !item.passed).length;
     if (accessToken && discovery.sitemap_urls.length) {
       try { entry.sitemap_submitted = await submitSitemap(site, discovery.sitemap_urls[0], accessToken); }
       catch (error) { entry.google_error = error.message; }
-      const batch = await nextInspectionBatch(env, site, discovery.discovered_pages);
+      const batch = await nextRotatingBatch(env, site, discovery.discovered_pages, INSPECTIONS_PER_SITE_PER_RUN, "indexing-cursor-v1");
       entry.inspections = await Promise.all(batch.map(async pageUrl => {
         try { return await inspectUrl(site, pageUrl, accessToken); }
         catch (error) { return { url: pageUrl, verdict: "ERROR", message: error.message }; }
