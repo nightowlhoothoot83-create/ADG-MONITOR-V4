@@ -89,10 +89,41 @@ function dashboard(siteReport, saasReport, indexingReport = {}, repairReport = {
   <section><div class="section-head"><h2>Raven-Sharp SaaS</h2><span>${apps.length} apps</span></div><div class="grid">${apps.map(card).join("") || "<p>No SaaS report yet.</p>"}</div></section>
   <section><div class="section-head"><h2>Page indexing</h2><span>${discovered} pages discovered</span></div><div class="grid">
     <article class="card ${indexingReport.google_configured ? "healthy" : "waiting"}"><div class="card-head"><div><h3>Google Search Console</h3><p class="message">${indexingReport.google_configured ? "Connected" : "Setup required: add the GSC service account secret"}</p></div><span class="status">${indexingReport.google_configured ? "Active" : "Setup required"}</span></div><div class="metrics"><span>Inspected <b>${inspected}</b></span><span>Indexed <b>${indexed}</b></span></div>${indexingReport.authentication_error ? `<p class="message">${escapeHtml(indexingReport.authentication_error)}</p>` : ""}</article>
-    ${indexingSites.map(site => `<article class="card ${site.discovery_errors?.length ? "error" : "healthy"}"><div class="card-head"><div><h3>${escapeHtml(site.name)}</h3><a href="${escapeHtml(site.sitemap_urls?.[0] || site.url)}" target="_blank" rel="noreferrer">${escapeHtml(site.sitemap_urls?.[0] || "No sitemap found")}</a></div><span class="status">${site.discovered_count || 0} pages</span></div><div class="metrics"><span>Checked <b>${site.inspected_count || 0}</b></span><span>Indexed <b>${site.indexed_count || 0}</b></span></div></article>`).join("")}
+    ${indexingSites.map(site => {
+      const issueCount = (site.discovery_errors?.length || 0) + (site.live_issue_count || 0) + (site.canonical_conflict_count || 0);
+      const issueItems = [
+        ...(site.discovery_errors || []).map(item => item.message),
+        ...(site.live_audits || []).filter(item => !item.passed).flatMap(item => item.issues.map(issue => `${item.url}: ${issue}`)),
+        ...(site.inspections || []).filter(item => item.google_canonical && item.user_canonical && item.google_canonical !== item.user_canonical).map(item => `${item.url}: Google selected ${item.google_canonical}`)
+      ].slice(0, 8);
+      return `<article class="card ${issueCount ? "error" : "healthy"}"><div class="card-head"><div><h3>${escapeHtml(site.name)}</h3><a href="${escapeHtml(site.sitemap_urls?.[0] || site.url)}" target="_blank" rel="noreferrer">${escapeHtml(site.sitemap_urls?.[0] || "No sitemap found")}</a></div><span class="status">${issueCount ? `${issueCount} issue(s)` : `${site.discovered_count || 0} pages`}</span></div><div class="metrics"><span>Google checked <b>${site.inspected_count || 0}</b></span><span>Indexed <b>${site.indexed_count || 0}</b></span><span>Live audited <b>${site.live_audited_count || 0}</b></span></div>${issueItems.length ? `<ul class="checks">${issueItems.map(issue => `<li class="fail"><span>!</span>${escapeHtml(issue)}</li>`).join("")}</ul>` : ""}</article>`;
+    }).join("")}
   </div></section>
-  <section><div class="section-head"><h2>Approval queue</h2><span>${repairItems.length} waiting</span></div><div class="grid">${repairItems.map(item => `<article class="card waiting"><div class="card-head"><div><h3>${escapeHtml(item.site)}</h3><p class="message">These changes require your approval before a repair pull request is created.</p></div><span class="status">Approval required</span></div><ul class="checks">${item.changes.map(change => `<li class="fail"><span>!</span>${escapeHtml(change)}</li>`).join("")}</ul></article>`).join("") || '<article class="card healthy"><div class="card-head"><div><h3>No changes waiting</h3><p class="message">Safe basic corrections run automatically. Consequential fixes wait for approval.</p></div><span class="status">Clear</span></div></article>'}</div></section>
-  <footer>Regressions are confirmed only after two consecutive failures. Baseline resets and consequential repairs require the approval key.</footer></main></body></html>`;
+  <section><div class="section-head"><h2>Approval queue</h2><span>${repairItems.length} waiting</span></div>${repairItems.length ? '<div class="actions" style="margin:0 0 14px"><button class="button" type="button" id="approve-repairs">Approve queued repairs</button><span id="approval-status" class="message" role="status"></span></div>' : ''}<div class="grid">${repairItems.map(item => `<article class="card waiting"><div class="card-head"><div><h3>${escapeHtml(item.site)}</h3><p class="message">These changes require your approval before a repair pull request is created.</p></div><span class="status">Approval required</span></div><ul class="checks">${item.changes.map(change => `<li class="fail"><span>!</span>${escapeHtml(change)}</li>`).join("")}</ul></article>`).join("") || '<article class="card healthy"><div class="card-head"><div><h3>No changes waiting</h3><p class="message">Safe basic corrections run automatically. Consequential fixes wait for approval.</p></div><span class="status">Clear</span></div></article>'}</div></section>
+  <footer>Regressions are confirmed only after two consecutive failures. Baseline resets and consequential repairs require the approval key.</footer></main>
+  <script>
+  (() => {
+    const button = document.getElementById('approve-repairs');
+    if (!button) return;
+    const status = document.getElementById('approval-status');
+    button.addEventListener('click', async () => {
+      const key = window.prompt('Enter the ADG Monitor repair approval key. It is sent only to this Worker and is not saved in the page.');
+      if (!key) return;
+      button.disabled = true;
+      status.textContent = 'Submitting approved repairs…';
+      try {
+        const response = await fetch('/repair/run', { method: 'POST', headers: { Authorization: 'Bearer ' + key } });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || 'Approval failed');
+        status.textContent = 'Approved. Repair pull requests have been prepared; refreshing the report…';
+        window.setTimeout(() => window.location.assign('/repair/scan'), 1200);
+      } catch (error) {
+        status.textContent = error.message;
+        button.disabled = false;
+      }
+    });
+  })();
+  </script></body></html>`;
 }
 
 async function checkSite(site) {
@@ -100,20 +131,13 @@ async function checkSite(site) {
   try {
     const response = await fetch(site.url, { headers: { "User-Agent": "ADG-Monitor-v4/1.0" } });
     const html = await response.text();
-    return {
-      id: site.id,
-      name: site.name,
-      url: site.url,
-      final_url: response.url,
-      status: response.ok ? "up" : "error",
-      http: response.status,
-      response_ms: Date.now() - started,
-      checks: {
+    const checks = {
         title: /<title>[\s\S]+?<\/title>/i.test(html),
         description: /<meta\b[^>]*name=["']description["']/i.test(html),
         canonical: /<link\b[^>]*rel=["']canonical["']/i.test(html),
-        canonical_target: new RegExp(`<link\\b[^>]*(?:rel=["']canonical["'][^>]*href|href)=["']${site.url.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\/?["']`, "i").test(html),
-        redirect_target: new URL(response.url).hostname === new URL(site.url).hostname,
+        canonical_target: canonicalMatches(html, response.url),
+        indexable: !/<meta\b[^>]*name=["']robots["'][^>]*content=["'][^"']*noindex/i.test(html),
+        redirect_target: normalizedHost(response.url) === normalizedHost(site.url),
         schema: /<script\b[^>]*type=["']application\/ld\+json["']/i.test(html),
         h1: /<h1\b/i.test(html),
         privacy: /href=["'][^"']*privacy/i.test(html),
@@ -121,13 +145,40 @@ async function checkSite(site) {
         about: /href=["'][^"']*about/i.test(html),
         contact: /href=["'][^"']*contact/i.test(html),
         cookies: /href=["'][^"']*(cookies|cookie-policy)/i.test(html),
-        consent_ui: /(cookie-consent|googlefc|privacy-messaging|consent)/i.test(html),
+        consent_ui: /<script\b[^>]*src=["'][^"']*cookie-consent\.js/i.test(html),
         suspicious_links: (html.match(/<a\b[^>]*href=["']#["'][^>]*>/gi) || []).length
-      }
+      };
+    const criticalPassed = response.ok && ["title", "description", "canonical", "canonical_target", "indexable", "redirect_target", "h1", "privacy", "terms", "about", "contact", "cookies", "consent_ui"].every(name => checks[name] === true);
+    return {
+      id: site.id,
+      name: site.name,
+      url: site.url,
+      final_url: response.url,
+      status: criticalPassed ? "up" : "error",
+      http: response.status,
+      response_ms: Date.now() - started,
+      checks
     };
   } catch (error) {
     return { id: site.id, name: site.name, url: site.url, status: "error", message: error.message, response_ms: Date.now() - started };
   }
+}
+
+function normalizedHost(value) {
+  return new URL(value).hostname.toLowerCase().replace(/^www\./, "");
+}
+
+function canonicalMatches(html, pageUrl) {
+  const match = html.match(/<link\b[^>]*rel=["']canonical["'][^>]*href=["']([^"']+)["']/i)
+    || html.match(/<link\b[^>]*href=["']([^"']+)["'][^>]*rel=["']canonical["']/i);
+  if (!match) return false;
+  try {
+    const expected = new URL(pageUrl); expected.hash = "";
+    const actual = new URL(match[1], pageUrl); actual.hash = "";
+    if (expected.pathname !== "/") expected.pathname = expected.pathname.replace(/\/$/, "");
+    if (actual.pathname !== "/") actual.pathname = actual.pathname.replace(/\/$/, "");
+    return expected.href === actual.href;
+  } catch { return false; }
 }
 
 async function checkSaas(app) {
@@ -220,9 +271,8 @@ export default {
     if (url.pathname === "/report" || url.pathname === "/saas/report") return htmlResponse(await renderDashboard(env));
     if (url.pathname === "/report.json") return json({ sites: await latest(env), saas: await latestSaas(env), indexing: await latestIndexing(env), repairs: await latestRepair(env), regressions: await latestRegressionReport(env) });
     if (url.pathname === "/indexing/run") {
-      ctx.waitUntil(auditIndexing(env, SITES));
-      const indexing = await latestIndexing(env);
-      return htmlResponse(await renderDashboard(env, { indexing: { ...indexing, run_started: new Date().toISOString() } }));
+      const indexing = await auditIndexing(env, SITES);
+      return htmlResponse(await renderDashboard(env, { indexing }));
     }
     if (url.pathname === "/indexing/report.json") return json(await latestIndexing(env));
     if (url.pathname === "/saas/run") return json(await auditSaas(env));
