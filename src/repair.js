@@ -1,9 +1,9 @@
 const API = "https://api.github.com";
 
 export const SITES = [
-  { id: "mycalctools", name: "MyCalcTools", url: "https://mycalctools.net", repo: "Mycalctools", policyStyle: "html" },
+  { id: "mycalctools", name: "MyCalcTools", url: "https://mycalctools.net", repo: "Mycalctools", policyStyle: "clean" },
   { id: "mycalendartools", name: "MyCalendarTools", url: "https://mycalendartools.net", repo: "Mycalendartools", policyStyle: "folder" },
-  { id: "wheel", name: "Wheel Name Picker", url: "https://wheelnamepicker.com.au", repo: "Wheelnamepicker", policyStyle: "html" }
+  { id: "wheel", name: "Wheel Name Picker", url: "https://wheelnamepicker.com.au", repo: "Wheelnamepicker", policyStyle: "clean" }
 ];
 
 const OWNER = "nightowlhoothoot83-create";
@@ -45,7 +45,9 @@ async function getFile(site, path, token, ref = "main") {
 }
 
 function policyHref(site, name) {
-  return site.policyStyle === "html" ? `/${name}.html` : `/${name}/`;
+  if (site.policyStyle === "html") return `/${name}.html`;
+  if (site.policyStyle === "clean") return `/${name}`;
+  return `/${name}/`;
 }
 
 function policyFooter(site) {
