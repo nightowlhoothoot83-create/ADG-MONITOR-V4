@@ -1,3 +1,5 @@
+import { runSafeSaasTests, readSaasTestState, approvedTestInventory } from "./saas-testing.js";
+
 const APPS = [
   { id: "pod", name: "Raven-Sharp POD", url: "https://pod.raven-sharp.com", featurePaths: ["/register", "/login", "/pricing", "/legal/privacy", "/legal/terms", "/legal/cookies"] },
   { id: "image-optimiser", name: "Image Optimiser & Upscaler", url: "https://opt.raven-sharp.com", featurePaths: ["/optimiser", "/register", "/login", "/legal/privacy", "/legal/terms", "/legal/cookies"] },
@@ -166,12 +168,26 @@ function page(report, status) {
     return `<article class="card ${app.status === "up" ? "up" : "bad"}"><h2>${esc(app.name)}</h2><a href="${esc(app.url)}">${esc(app.url)}</a><p><b>${esc(app.status || "not checked")}</b>${app.http ? ` Â· HTTP ${app.http} Â· ${app.response_ms} ms` : ""}</p><p>${failures.length ? `Needs: ${esc(failures.join(", "))}` : "All configured checks passed."}</p></article>`;
   }).join("") || '<article class="card"><h2>No report yet</h2><p>Run the SaaS monitor to create the first report.</p></article>';
   const stateText = running ? "Running now â€” checking six SaaS appsâ€¦" : status.status === "failed" ? `Failed: ${esc(status.message)}` : status.status === "completed" ? `Completed ${esc(new Date(status.completed_at).toLocaleString("en-AU", { timeZone: "Australia/Brisbane" }))} Brisbane time` : "Not started";
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ADG SaaS Monitor</title><style>body{margin:0;background:#07111f;color:#f4f8ff;font:15px/1.5 system-ui}main{width:min(1100px,calc(100% - 32px));margin:auto;padding:42px 0}header{display:flex;justify-content:space-between;gap:20px;align-items:center}.button{display:inline-block;background:#67a7ff;color:#06101e;padding:11px 16px;border-radius:10px;text-decoration:none;font-weight:800}.button[aria-disabled=true]{opacity:.55;pointer-events:none}.state{margin:22px 0;padding:15px;border:1px solid #29405f;border-radius:12px;background:#101d30}.running{border-color:#f7bd58}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:16px}.card{background:#101d30;border:1px solid #29405f;border-top:4px solid #9fb0c8;border-radius:15px;padding:18px}.card.up{border-top-color:#42d392}.card.bad{border-top-color:#ff6b75}a{color:#8dbaff}p{color:#b6c4d8}</style></head><body><main><header><div><h1>ADG SaaS Monitor</h1><p>Six Raven-Sharp applications, separate from AdSense and remaining sites.</p></div><a class="button" href="/run" aria-disabled="${running}">${running ? "Runningâ€¦" : "Run SaaS monitor"}</a></header><div class="state ${running ? "running" : ""}" id="run-state">${stateText}</div><div class="grid">${cards}</div></main>${running ? `<script>const poll=setInterval(async()=>{const response=await fetch('/status.json',{cache:'no-store'});const data=await response.json();document.getElementById('run-state').textContent=data.status.status==='running'?'Running now â€” checking six SaaS appsâ€¦':data.status.status==='failed'?'Failed: '+data.status.message:'Completed â€” refreshing resultsâ€¦';if(data.status.status!=='running'){clearInterval(poll);setTimeout(()=>location.assign('/'),700)}},2000)</script>` : ""}</body></html>`;
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ADG SaaS Monitor</title><style>body{margin:0;background:#07111f;color:#f4f8ff;font:15px/1.5 system-ui}main{width:min(1100px,calc(100% - 32px));margin:auto;padding:42px 0}header{display:flex;justify-content:space-between;gap:20px;align-items:center}.button{display:inline-block;background:#67a7ff;color:#06101e;padding:11px 16px;border-radius:10px;text-decoration:none;font-weight:800}.button[aria-disabled=true]{opacity:.55;pointer-events:none}.state{margin:22px 0;padding:15px;border:1px solid #29405f;border-radius:12px;background:#101d30}.running{border-color:#f7bd58}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:16px}.card{background:#101d30;border:1px solid #29405f;border-top:4px solid #9fb0c8;border-radius:15px;padding:18px}.card.up{border-top-color:#42d392}.card.bad{border-top-color:#ff6b75}a{color:#8dbaff}p{color:#b6c4d8}</style></head><body><main><header><div><h1>ADG SaaS Monitor</h1><p>Six Raven-Sharp applications, separate from AdSense and remaining sites.</p></div><div style="display:flex;gap:10px;flex-wrap:wrap"><a class="button" href="/run" aria-disabled="${running}">${running ? "Runningâ€¦" : "Run SaaS monitor"}</a><a class="button" href="/testing/run">Run safe feature tests</a><a class="button" href="/testing/report.json">Testing report</a></div></header><div class="state ${running ? "running" : ""}" id="run-state">${stateText}</div><div class="grid">${cards}</div></main>${running ? `<script>const poll=setInterval(async()=>{const response=await fetch('/status.json',{cache:'no-store'});const data=await response.json();document.getElementById('run-state').textContent=data.status.status==='running'?'Running now â€” checking six SaaS appsâ€¦':data.status.status==='failed'?'Failed: '+data.status.message:'Completed â€” refreshing resultsâ€¦';if(data.status.status!=='running'){clearInterval(poll);setTimeout(()=>location.assign('/'),700)}},2000)</script>` : ""}</body></html>`;
 }
 
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
+    if (url.pathname === "/testing/run") {
+      const current = await readSaasTestState(env);
+      if (current.status.status !== "running") ctx.waitUntil(runSafeSaasTests(env));
+      return json({ status: "started", mode: "safe_read_only", report: "/testing/report.json", status_url: "/testing/status.json", safety: "GET-only; no credits, publishing, billing, deletion or external-data mutation." });
+    }
+    if (url.pathname === "/testing/status.json") return json(await readSaasTestState(env));
+    if (url.pathname === "/testing/report.json") return json((await readSaasTestState(env)).report);
+    if (url.pathname === "/testing/approved-inventory.json") return json(approvedTestInventory());
+    if (url.pathname === "/testing/approved/run" && request.method === "POST") {
+      if (!env.REPAIR_APPROVAL_KEY || request.headers.get("Authorization") !== `Bearer ${env.REPAIR_APPROVAL_KEY}`) {
+        return new Response(JSON.stringify({ error: "Explicit testing approval is required." }, null, 2), { status: 403, headers: { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" } });
+      }
+      return new Response(JSON.stringify({ error: "Approved mutating tests remain disabled until dedicated test accounts, provider sandbox credentials, hard spend limits and disposable-data cleanup rules are configured.", inventory: approvedTestInventory() }, null, 2), { status: 409, headers: { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" } });
+    }
     if (url.pathname === "/run") {
       const current = await readState(env);
       if (current.status.status !== "running") ctx.waitUntil(run(env));
@@ -179,7 +195,7 @@ export default {
     }
     if (url.pathname === "/status.json") return json(await readState(env));
     if (url.pathname === "/report.json") return json((await readState(env)).report);
-    if (url.pathname === "/health") return json({ ok: true, service: "adg-saas-monitor", version: 3, apps: APPS.length, audit: "launch-readiness" });
+    if (url.pathname === "/health") return json({ ok: true, service: "adg-saas-monitor", version: 4, apps: APPS.length, audit: "launch-readiness", testing_agent: "safe_read_only" });
     const state = await readState(env);
     return new Response(page(state.report, state.status), { headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" } });
   },
