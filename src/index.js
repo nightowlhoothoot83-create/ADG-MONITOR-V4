@@ -110,7 +110,7 @@ function dashboard(siteReport, saasReport, indexingReport = {}, repairReport = {
       const allItems = [
         ...(site.discovery_errors || []).map(item => item.message),
         ...(site.live_audits || []).filter(item => !item.passed).flatMap(item => item.issues.map(issue => `${item.url}: ${issue}`)),
-        ...(site.inspections || []).filter(item => item.google_canonical && item.user_canonical && !sameCanonical(item.google_canonical, item.user_canonical)).map(item => `${item.url}: Google selected ${item.google_canonical}`)
+        ...(site.inspections || []).filter(item => item.google_canonical && !sameCanonical(item.google_canonical, item.url)).map(item => `${item.url}: Google selected a different page: ${item.google_canonical}`)
       ];
       const monitorErrors = allItems.filter(isMonitorError);
       const issueItems = allItems.filter(item => !isMonitorError(item));
