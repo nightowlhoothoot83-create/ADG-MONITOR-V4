@@ -10,7 +10,7 @@ const ENDPOINTS = [
   { id: "terms", path: "/terms", type: "html" },
   { id: "about", path: "/about", type: "html" },
   { id: "contact", path: "/contact", type: "html" },
-  { id: "cookies", path: "/cookies", type: "html" },
+  { id: "cookies", path: "/cookies", type: "cookie" },
   { id: "ads_txt", path: "/ads.txt", type: "ads" },
   { id: "robots_txt", path: "/robots.txt", type: "robots" },
   { id: "sitemap", path: "/sitemap.xml", type: "sitemap" }
@@ -31,11 +31,21 @@ function acceptableContent(type, text) {
   if (type === "robots") return /user-agent\s*:/i.test(text) && /sitemap\s*:/i.test(text);
   if (type === "sitemap") return /<urlset|<sitemapindex/i.test(text);
   if (type === "consent") return /cookieConsent/i.test(text) && /(accept|granted)/i.test(text) && /(decline|denied)/i.test(text) && /(settings|preferences|reopen)/i.test(text);
+  if (type === "cookie") {
+    const hasCookieIdentity = /<title>[^<]*(cookie policy|cookies)[^<]*<\/title>/i.test(text)
+      || /<h1\b[^>]*>[^<]*(cookie policy|cookies)[^<]*<\/h1>/i.test(text);
+    const explainsConsent = /(cookie consent|cookie preferences|local storage)/i.test(text)
+      && /(accept|decline|change your choice|cookie settings)/i.test(text);
+    return hasCookieIdentity && explainsConsent;
+  }
   return /<html|<!doctype html/i.test(text) && text.replace(/<[^>]+>/g, " ").trim().length > 80;
 }
 
 async function checkEndpoint(site, endpoint) {
-  const url = `${site.url}${endpoint.path}`;
+  const requestedPath = endpoint.id === "cookies"
+    ? site.policyStyle === "html" ? "/cookies.html" : "/cookies/"
+    : endpoint.path;
+  const url = `${site.url}${requestedPath}`;
   try {
     const response = await fetch(url, {
       redirect: "follow",
@@ -45,9 +55,9 @@ async function checkEndpoint(site, endpoint) {
     const finalHost = new URL(response.url).hostname;
     const expectedHost = new URL(site.url).hostname;
     const passed = response.ok && finalHost === expectedHost && acceptableContent(endpoint.type, text);
-    return { passed, requested_path: endpoint.path, http: response.status, final_url: response.url };
+    return { passed, requested_path: requestedPath, http: response.status, final_url: response.url };
   } catch (error) {
-    return { passed: false, requested_path: endpoint.path, error: error.message };
+    return { passed: false, requested_path: requestedPath, error: error.message };
   }
 }
 
@@ -231,3 +241,4 @@ export async function resetRegressionBaseline(env, sites) {
   await writeJson(env, STATE_KEY, { version: 1, updated_at: baseline.updated_at, sites: {} });
   return { status: "baseline_saved", sites: snapshots.map(site => site.id), saved_at: baseline.updated_at };
 }
+
