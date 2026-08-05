@@ -4,7 +4,7 @@ const WEBMASTERS_API = "https://www.googleapis.com/webmasters/v3";
 const MAX_SITEMAPS_PER_SITE = 5;
 const MAX_PAGES_PER_SITE = 100;
 const INSPECTIONS_PER_SITE_PER_RUN = 3;
-const LIVE_AUDITS_PER_SITE_PER_RUN = 12;
+const LIVE_AUDITS_PER_SITE_PER_RUN = 8;
 const MAX_TEXT_BYTES = 1_000_000;
 
 const encoder = new TextEncoder();
@@ -211,7 +211,7 @@ async function nextInspectionBatch(env, site, pages) {
   return batch;
 }
 
-export async function auditIndexing(env, sites) {
+export async function auditIndexing(env, sites, { merge = sites.length === 1 } = {}) {
   const serviceAccount = env.GSC_SERVICE_ACCOUNT_JSON || env.GSC_SERVICE_ACCOUNT_KEY;
   const credentialsConfigured = Boolean(serviceAccount);
   let accessToken = null;
@@ -254,13 +254,17 @@ export async function auditIndexing(env, sites) {
     }
     results.push(entry);
   }
+  const previous = merge ? await env.MONITOR_KV?.get("latest-indexing-report-v1", "json") : null;
+  const mergedSites = merge
+    ? [...(previous?.sites || []).filter(site => !results.some(result => result.id === site.id)), ...results]
+    : results;
   const report = {
     version: 1,
     run_at: new Date().toISOString(),
     google_configured: credentialsConfigured,
     authentication_error: authenticationError,
-    inspection_policy: `${INSPECTIONS_PER_SITE_PER_RUN} rotating Google inspections plus ${LIVE_AUDITS_PER_SITE_PER_RUN} live sitemap-page audits per site per run`,
-    sites: results
+    inspection_policy: `${INSPECTIONS_PER_SITE_PER_RUN} rotating Google inspections plus ${LIVE_AUDITS_PER_SITE_PER_RUN} live sitemap-page audits for one site per invocation`,
+    sites: mergedSites
   };
   await env.MONITOR_KV?.put("latest-indexing-report-v1", JSON.stringify(report));
   return report;
@@ -269,3 +273,4 @@ export async function auditIndexing(env, sites) {
 export async function latestIndexing(env) {
   return await env.MONITOR_KV?.get("latest-indexing-report-v1", "json") || { status: "no_report", message: "Run /indexing/run first" };
 }
+

@@ -13,13 +13,13 @@ Cloudflare Worker source for the Ascension Digital Group AdSense-site monitor.
 
 ## Managed sites
 
-- `mycalctools.net` â†’ `nightowlhoothoot83-create/Mycalctools`
-- `mycalendartools.net` â†’ `nightowlhoothoot83-create/Mycalendartools`
-- `wheelnamepicker.com.au` â†’ `nightowlhoothoot83-create/Wheelnamepicker`
+- `mycalctools.net` Ã¢â€ â€™ `nightowlhoothoot83-create/Mycalctools`
+- `mycalendartools.net` Ã¢â€ â€™ `nightowlhoothoot83-create/Mycalendartools`
+- `wheelnamepicker.com.au` Ã¢â€ â€™ `nightowlhoothoot83-create/Wheelnamepicker`
 
 ## SaaS monitor
 
-The same once-daily Worker also monitors six Raven-Sharp SaaS products without adding another scheduled Worker invocation. It makes one homepage request per deployed app. Apps that are not live yet are recorded as `awaiting_deployment`, so they do not waste calls or create false outage alerts.
+AdSense sites and Raven-Sharp SaaS products run as separate monitor invocations. Indexing rotates through one AdSense site per invocation, preventing Search Console, sitemap, redirect and live-page checks from exhausting Cloudflare's subrequest allowance.
 
 - `pod.raven-sharp.com` - Raven-Sharp POD
 - `opt.raven-sharp.com` - Image Optimiser & Upscaler
@@ -28,7 +28,7 @@ The same once-daily Worker also monitors six Raven-Sharp SaaS products without a
 - `books.raven-sharp.com` - Book Creator (awaiting deployment)
 - `content.raven-sharp.com` - Content Creator (awaiting deployment)
 
-Endpoints: `/saas/run` starts a manual SaaS check and `/saas/report` returns the latest saved result.
+Endpoints: `/adsense/run` runs the three AdSense homepage checks, `/saas/run-view` runs the six SaaS checks, and `/indexing/run?site=<id>` runs indexing for one AdSense site. `/indexing/run` rotates to the next site automatically.
 
 ## Page discovery and Google indexing
 
@@ -62,4 +62,5 @@ If the secret value is no longer known, replace `REPAIR_APPROVAL_KEY` in the Wor
 - `GSC_SERVICE_ACCOUNT_KEY`: Google service-account JSON with Search Console access
 
 Google's general Search Console API supports sitemap submission and URL inspection. Direct Indexing API notifications are intentionally excluded because Google restricts them to qualifying job-posting and livestream pages.
+
 
