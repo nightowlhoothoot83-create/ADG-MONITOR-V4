@@ -26,23 +26,15 @@ async function runRepairWithIndexing(env, isApproved) {
   return report;
 }
 
-const INDEXING_CRONS = new Map([
-  ["0 21 * * *", "mycalctools"],
-  ["10 21 * * *", "mycalendartools"],
-  ["20 21 * * *", "wheel"],
-  ["30 21 * * *", "mycalctools"],
-  ["40 21 * * *", "mycalendartools"],
-  ["50 21 * * *", "wheel"],
-  ["0 22 * * *", "mycalctools"],
-  ["10 22 * * *", "mycalendartools"],
-  ["20 22 * * *", "wheel"],
-  ["30 22 * * *", "mycalctools"],
-  ["40 22 * * *", "mycalendartools"],
-  ["50 22 * * *", "wheel"],
-  ["0 23 * * *", "mycalctools"],
-  ["10 23 * * *", "mycalendartools"],
-  ["20 23 * * *", "wheel"]
-]);
+const INDEXING_CRONS = new Set(["*/10 21-22 * * *", "0,10,20 23 * * *"]);
+
+function indexingSiteForScheduledTime(scheduledTime) {
+  const date = new Date(scheduledTime);
+  const hour = date.getUTCHours();
+  const minute = date.getUTCMinutes();
+  const slot = ((hour - 21) * 6) + Math.floor(minute / 10);
+  return SITES[slot % SITES.length];
+}
 
 export default {
   async fetch(request, env, ctx) {
@@ -62,9 +54,8 @@ export default {
   },
 
   async scheduled(event, env, ctx) {
-    const siteId = INDEXING_CRONS.get(event.cron);
-    if (siteId) {
-      const site = SITES.find(item => item.id === siteId);
+    if (INDEXING_CRONS.has(event.cron)) {
+      const site = indexingSiteForScheduledTime(event.scheduledTime);
       ctx.waitUntil(auditIndexing(env, [site]));
       return;
     }
