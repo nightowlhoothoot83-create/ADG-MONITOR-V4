@@ -36,6 +36,86 @@ function indexingSiteForScheduledTime(scheduledTime) {
   return SITES[slot % SITES.length];
 }
 
+async function enhanceDashboardResponse(response) {
+  const contentType = response.headers.get("content-type") || "";
+  if (!contentType.includes("text/html")) return response;
+
+  let html = await response.text();
+  html = html
+    .replaceAll("Google checked <b>", "Google checked (24h sample) <b>")
+    .replaceAll("Indexed <b>", "Indexed in checked set <b>");
+
+  const styles = `<style>
+    .button.task-active{outline:2px solid var(--green);box-shadow:0 0 0 4px rgba(66,211,146,.12);background:#163b31;color:#c8ffe2}
+    .button.task-busy{cursor:progress;opacity:.95}
+    .task-spinner{display:inline-block;width:13px;height:13px;margin-right:8px;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;vertical-align:-2px;animation:adg-spin .7s linear infinite}
+    .task-state{display:none;margin:10px 0 0;color:var(--green);font-weight:700}
+    .task-state.visible{display:block}
+    .checks li.advisory{color:var(--amber);text-transform:none}
+    .checks li.advisory span{background:#4a3818;color:#ffd987}
+    @keyframes adg-spin{to{transform:rotate(360deg)}}
+  </style>`;
+
+  const script = `<script>
+  (() => {
+    const taskSelector = [
+      'a.button[href^="/adsense/run"]',
+      'a.button[href^="/regression/run"]',
+      'a.button[href^="/indexing/run"]',
+      'a.button[href^="/repair/scan"]'
+    ].join(',');
+    const buttons = [...document.querySelectorAll(taskSelector)];
+    let state = document.querySelector('.task-state');
+    if (!state) {
+      state = document.createElement('p');
+      state.className = 'task-state';
+      state.setAttribute('role', 'status');
+      const header = document.querySelector('header');
+      if (header) header.insertAdjacentElement('afterend', state);
+    }
+    buttons.forEach(button => {
+      button.addEventListener('click', () => {
+        buttons.forEach(other => other.classList.remove('task-active','task-busy'));
+        button.classList.add('task-active','task-busy');
+        const original = button.textContent.trim();
+        button.innerHTML = '<span class="task-spinner" aria-hidden="true"></span>' + original + '…';
+        button.setAttribute('aria-busy','true');
+        state.textContent = original + ' is running. The dashboard will refresh when it finishes.';
+        state.classList.add('visible');
+      });
+    });
+
+    document.querySelectorAll('.checks li.fail').forEach(item => {
+      if (/Thin Page:/i.test(item.textContent || '')) {
+        item.classList.remove('fail');
+        item.classList.add('advisory');
+        const icon = item.querySelector('span');
+        if (icon) icon.textContent = 'i';
+        item.innerHTML = item.innerHTML.replace(/Thin Page:/i, 'Content advisory:');
+      }
+    });
+
+    document.querySelectorAll('article.card').forEach(card => {
+      const advisories = card.querySelectorAll('.checks li.advisory');
+      const remainingFailures = card.querySelectorAll('.checks li.fail');
+      if (advisories.length && !remainingFailures.length) {
+        const status = card.querySelector('.status');
+        if (status && /site issue/i.test(status.textContent || '')) {
+          status.textContent = advisories.length + ' content advisory' + (advisories.length === 1 ? '' : 'ies');
+          card.classList.remove('error');
+          card.classList.add('waiting');
+        }
+      }
+    });
+  })();
+  </script>`;
+
+  html = html.replace("</head>", `${styles}</head>`).replace("</body>", `${script}</body>`);
+  const headers = new Headers(response.headers);
+  headers.delete("content-length");
+  return new Response(html, { status: response.status, statusText: response.statusText, headers });
+}
+
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
@@ -50,7 +130,8 @@ export default {
       return json(await runRepairWithIndexing(env, true));
     }
 
-    return baseWorker.fetch(request, env, ctx);
+    const response = await baseWorker.fetch(request, env, ctx);
+    return enhanceDashboardResponse(response);
   },
 
   async scheduled(event, env, ctx) {
