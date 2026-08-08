@@ -1,13 +1,16 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "adg-monitor-v4",
-  "main": "src/index.js",
+  "main": "src/worker.js",
   "compatibility_date": "2026-07-29",
   "observability": { "enabled": true },
-  "triggers": { "crons": ["0 20 * * *", "0 21 * * *", "0 23 * * *"] },
+  "triggers": { "crons": [
+    "0 20 * * *",
+    "0 21 * * *", "10 21 * * *", "20 21 * * *", "30 21 * * *", "40 21 * * *", "50 21 * * *",
+    "0 22 * * *", "10 22 * * *", "20 22 * * *", "30 22 * * *", "40 22 * * *", "50 22 * * *",
+    "0 23 * * *", "10 23 * * *", "20 23 * * *", "40 23 * * *"
+  ] },
   "kv_namespaces": [
     { "binding": "MONITOR_KV", "id": "b0ccea6158eb468198c6b80bb2232250" }
   ]
 }
-
-
