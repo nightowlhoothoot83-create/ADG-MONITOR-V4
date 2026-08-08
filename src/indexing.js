@@ -1,279 +1,32 @@
-const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
-const INSPECTION_URL = "https://searchconsole.googleapis.com/v1/urlInspection/index:inspect";
-const WEBMASTERS_API = "https://www.googleapis.com/webmasters/v3";
-const MAX_SITEMAPS_PER_SITE = 5;
-const MAX_PAGES_PER_SITE = 100;
-// Keep a targeted run comfortably below the Workers subrequest ceiling. A
-// sitemap URL can redirect before its HTML is fetched, so each live audit may
-// consume more than one subrequest.
-const INSPECTIONS_PER_SITE_PER_RUN = 2;
-const LIVE_AUDITS_PER_SITE_PER_RUN = 1;
-const MAX_TEXT_BYTES = 1_000_000;
+const TOKEN_URL="https://oauth2.googleapis.com/token", INSPECT_URL="https://searchconsole.googleapis.com/v1/urlInspection/index:inspect", WEBMASTERS="https://www.googleapis.com/webmasters/v3";
+const MAX_SITEMAPS=5, MAX_PAGES=100, LIVE_PER_RUN=20, INSPECT_PER_RUN=8, MAX_BYTES=1_000_000;
+const enc=new TextEncoder();
 
-const encoder = new TextEncoder();
+function b64(bytes){let s="";for(const b of bytes)s+=String.fromCharCode(b);return btoa(s).replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/g,"")}
+function pemBytes(pem){const s=pem.replace(/-----BEGIN PRIVATE KEY-----|-----END PRIVATE KEY-----|\s/g,"");return Uint8Array.from(atob(s),c=>c.charCodeAt(0))}
+async function googleToken(raw){const c=JSON.parse(raw);if(!c.client_email||!c.private_key)throw new Error("GSC service account JSON is missing client_email or private_key");const now=Math.floor(Date.now()/1000),h=b64(enc.encode(JSON.stringify({alg:"RS256",typ:"JWT",kid:c.private_key_id}))),p=b64(enc.encode(JSON.stringify({iss:c.client_email,scope:"https://www.googleapis.com/auth/webmasters",aud:TOKEN_URL,iat:now,exp:now+3600}))),u=`${h}.${p}`,k=await crypto.subtle.importKey("pkcs8",pemBytes(c.private_key),{name:"RSASSA-PKCS1-v1_5",hash:"SHA-256"},false,["sign"]),sig=await crypto.subtle.sign("RSASSA-PKCS1-v1_5",k,enc.encode(u)),a=`${u}.${b64(new Uint8Array(sig))}`;const r=await fetch(TOKEN_URL,{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},body:new URLSearchParams({grant_type:"urn:ietf:params:oauth:grant-type:jwt-bearer",assertion:a})}),j=await r.json().catch(()=>({}));if(!r.ok||!j.access_token)throw new Error(`Google authentication failed (${r.status}): ${j.error_description||j.error||"unknown error"}`);return j.access_token}
+async function text(r){const n=Number(r.headers.get("content-length")||0);if(n>MAX_BYTES)throw new Error(`Response exceeds ${MAX_BYTES} bytes`);const t=await r.text();if(enc.encode(t).byteLength>MAX_BYTES)throw new Error(`Response exceeds ${MAX_BYTES} bytes`);return t}
+function host(v){return new URL(v).hostname.toLowerCase().replace(/^www\./,"")}
+function norm(v){const u=new URL(v);u.hash="";u.hostname=host(v);if(u.pathname!=="/")u.pathname=u.pathname.replace(/\/$/,"");return u.href}
+function canonical(html,url){const m=html.match(/<link\b[^>]*rel=["']canonical["'][^>]*href=["']([^"']+)["']/i)||html.match(/<link\b[^>]*href=["']([^"']+)["'][^>]*rel=["']canonical["']/i);if(!m)return null;try{return new URL(m[1],url).href}catch{return null}}
+function words(html){return html.replace(/<script\b[\s\S]*?<\/script>/gi," ").replace(/<style\b[\s\S]*?<\/style>/gi," ").replace(/<[^>]+>/g," ").replace(/&[a-z0-9#]+;/gi," ").trim().split(/\s+/).filter(x=>/[a-z0-9]/i.test(x)).length}
+const candidate=(kind,url,message,extra={})=>({kind,url,message,...extra});
 
-function base64Url(bytes) {
-  let binary = "";
-  for (const byte of bytes) binary += String.fromCharCode(byte);
-  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
-}
+async function tracedFetch(url){const seen=new Set(),chain=[];let cur=url;for(let i=0;i<8;i++){if(seen.has(cur))throw new Error(`Redirect loop detected at ${cur}`);seen.add(cur);const r=await fetch(cur,{redirect:"manual",headers:{"User-Agent":"ADG-Monitor-v4-Indexability/2.0","Cache-Control":"no-cache"}});if(r.status>=300&&r.status<400){const loc=r.headers.get("location");if(!loc)return{r,final:cur,chain,error:`HTTP ${r.status} has no Location header`};const next=new URL(loc,cur).href;chain.push({from:cur,to:next,status:r.status});cur=next;continue}return{r,final:cur,chain,error:null}}throw new Error(`Too many redirects from ${url}`)}
+async function auditPage(url){try{const x=await tracedFetch(url),ct=x.r.headers.get("content-type")||"",html=ct.includes("text/html")?(await text(x.r)).slice(0,MAX_BYTES):"",can=canonical(html,x.final),redirect=norm(url)!==norm(x.final),canBad=!!can&&norm(can)!==norm(x.final),noindex=/<meta\b[^>]*name=["']robots["'][^>]*content=["'][^"']*noindex/i.test(html)||/(?:^|,)\s*noindex\s*(?:,|$)/i.test(x.r.headers.get("x-robots-tag")||""),issues=[],rep=[];if(x.error){issues.push(x.error);rep.push(candidate("redirect_error",url,x.error,{redirect_chain:x.chain}))}if(!x.r.ok){const m=`HTTP ${x.r.status}`;issues.push(m);rep.push(candidate("http_error",url,m,{status:x.r.status,final_url:x.final}))}if(!ct.includes("text/html")){const m=`Unexpected content type: ${ct||"missing"}`;issues.push(m);rep.push(candidate("content_type",url,m,{content_type:ct,final_url:x.final}))}if(redirect){const m=`Sitemap URL redirects to ${x.final}`;issues.push(m);rep.push(candidate("redirect",url,m,{final_url:x.final,redirect_chain:x.chain}))}if(ct.includes("text/html")){if(!can){issues.push("Missing canonical");rep.push(candidate("missing_canonical",url,"Missing canonical",{final_url:x.final}))}else if(canBad){const m=`Canonical points to ${can}`;issues.push(m);rep.push(candidate("canonical_mismatch",url,m,{canonical:can,final_url:x.final}))}if(noindex){issues.push("Page is marked noindex");rep.push(candidate("noindex",url,"Page is marked noindex",{final_url:x.final}))}const wc=words(html);if(wc<350)issues.push(`Thin page: approximately ${wc} visible words`)}return{url,final_url:x.final,http:x.r.status,canonical:can,redirect_chain:x.chain,noindex,passed:issues.length===0,issues,repair_candidates:rep,audited_at:new Date().toISOString()}}catch(e){return{url,passed:false,issues:[e.message],repair_candidates:[candidate("fetch_error",url,e.message)],audited_at:new Date().toISOString()}}}
 
-function encodeJson(value) {
-  return base64Url(encoder.encode(JSON.stringify(value)));
-}
+function xmlLocs(xml){return[...xml.matchAll(/<loc\b[^>]*>([\s\S]*?)<\/loc>/gi)].map(m=>m[1].replace(/&amp;/g,"&").trim()).filter(Boolean)}
+function sameSite(v,site){try{const u=new URL(v);return u.protocol==="https:"&&host(v)===host(site)}catch{return false}}
+async function discover(site){const q=[`${site.url}/sitemap.xml`],seen=new Set(),pages=new Set(),errors=[];try{const r=await fetch(`${site.url}/robots.txt`,{headers:{"User-Agent":"ADG-Monitor-v4/2.0"}});if(r.ok)for(const m of (await text(r)).matchAll(/^\s*sitemap:\s*(\S+)/gim))if(!q.includes(m[1]))q.push(m[1])}catch{}while(q.length&&seen.size<MAX_SITEMAPS&&pages.size<MAX_PAGES){const s=q.shift();if(seen.has(s))continue;seen.add(s);try{const r=await fetch(s,{headers:{"User-Agent":"ADG-Monitor-v4/2.0"}});if(!r.ok)throw new Error(`HTTP ${r.status}`);const xml=await text(r),locs=xmlLocs(xml);if(/<sitemapindex\b/i.test(xml)){for(const l of locs)if(q.length+seen.size<MAX_SITEMAPS)q.push(l)}else for(const l of locs)if(pages.size<MAX_PAGES&&sameSite(l,site.url))pages.add(new URL(l).href)}catch(e){errors.push({sitemap:s,message:e.message})}}return{sitemap_urls:[...seen],discovered_pages:[...pages],errors}}
+function prop(site){return site.searchConsoleProperty||`sc-domain:${new URL(site.url).hostname}`}
+async function submit(site,sitemap,token){const r=await fetch(`${WEBMASTERS}/sites/${encodeURIComponent(prop(site))}/sitemaps/${encodeURIComponent(sitemap)}`,{method:"PUT",headers:{Authorization:`Bearer ${token}`}});if(!r.ok)throw new Error(`Sitemap submission failed (${r.status}): ${(await r.text()).slice(0,300)}`);return true}
+async function inspect(site,url,token){const r=await fetch(INSPECT_URL,{method:"POST",headers:{Authorization:`Bearer ${token}`,"Content-Type":"application/json"},body:JSON.stringify({inspectionUrl:url,siteUrl:prop(site),languageCode:"en-AU"})}),j=await r.json().catch(()=>({}));if(!r.ok)throw new Error(`URL Inspection failed (${r.status}): ${j.error?.message||"unknown error"}`);const x=j.inspectionResult?.indexStatusResult||{};return{url,verdict:x.verdict||"VERDICT_UNSPECIFIED",coverage_state:x.coverageState||"Unknown",indexing_state:x.indexingState||"Unknown",robots_txt_state:x.robotsTxtState||"Unknown",page_fetch_state:x.pageFetchState||"Unknown",google_canonical:x.googleCanonical||null,user_canonical:x.userCanonical||null,last_crawl_time:x.lastCrawlTime||null,inspected_at:new Date().toISOString()}}
+function googleRep(x){if(!x||x.verdict==="ERROR")return[];const a=[],cov=String(x.coverage_state||""),rob=String(x.robots_txt_state||""),fet=String(x.page_fetch_state||""),idx=String(x.indexing_state||"");if(/disallow|blocked/i.test(rob))a.push(candidate("google_robots_block",x.url,`Google reports robots.txt state: ${rob}`));if(fet&&!/successful|unknown|unspecified/i.test(fet))a.push(candidate("google_fetch",x.url,`Google reports page fetch state: ${fet}`));if(/blocked|noindex/i.test(idx))a.push(candidate("google_indexing_block",x.url,`Google reports indexing state: ${idx}`));if(/server error|not found|soft 404|redirect error|forbidden|unauthori|blocked/i.test(cov))a.push(candidate("google_coverage_error",x.url,`Google coverage state: ${cov}`));return a}
+function googleObs(x){if(!x||x.verdict==="ERROR"||googleRep(x).length)return null;if(x.google_canonical&&x.user_canonical&&norm(x.google_canonical)!==norm(x.user_canonical))return`${x.url}: Google selected ${x.google_canonical} instead of ${x.user_canonical}`;return x.verdict!=="PASS"?`${x.url}: ${x.coverage_state||x.indexing_state||x.verdict}`:null}
+function dedupe(a){const s=new Set();return a.filter(x=>{const k=`${x.kind}|${x.url||x.sitemap||""}|${x.message}`;if(s.has(k))return false;s.add(k);return true})}
+async function rotate(env,site,pages,count,keyName){if(!pages.length||count<=0)return[];const key=`${keyName}:${site.id}`,p=Number(await env.MONITOR_KV?.get(key)||0),start=p%pages.length,n=Math.min(count,pages.length),out=Array.from({length:n},(_,i)=>pages[(start+i)%pages.length]);await env.MONITOR_KV?.put(key,String((start+n)%pages.length));return out}
+async function batchInspect(env,site,pages,audits,prev){const pri=[];const add=u=>{if(u&&pages.includes(u)&&!pri.includes(u))pri.push(u)};for(const a of audits)if((a.repair_candidates||[]).length)add(a.url);for(const x of prev?.inspections||[])if(x.verdict!=="PASS")add(x.url);const out=pri.slice(0,INSPECT_PER_RUN);if(out.length<INSPECT_PER_RUN)out.push(...await rotate(env,site,pages.filter(u=>!out.includes(u)),INSPECT_PER_RUN-out.length,"indexing-cursor-v2"));return out}
+async function mapLimit(values,fn){const out=new Array(values.length);let i=0;async function run(){while(i<values.length){const n=i++;out[n]=await fn(values[n])}}await Promise.all(Array.from({length:Math.min(4,values.length||1)},run));return out}
 
-function pemToBytes(pem) {
-  const body = pem.replace(/-----BEGIN PRIVATE KEY-----|-----END PRIVATE KEY-----|\s/g, "");
-  const binary = atob(body);
-  return Uint8Array.from(binary, character => character.charCodeAt(0));
-}
-
-async function googleAccessToken(rawCredentials) {
-  const credentials = JSON.parse(rawCredentials);
-  if (!credentials.client_email || !credentials.private_key) throw new Error("GSC service account JSON is missing client_email or private_key");
-  const now = Math.floor(Date.now() / 1000);
-  const header = encodeJson({ alg: "RS256", typ: "JWT", kid: credentials.private_key_id });
-  const claims = encodeJson({ iss: credentials.client_email, scope: "https://www.googleapis.com/auth/webmasters", aud: GOOGLE_TOKEN_URL, iat: now, exp: now + 3600 });
-  const unsigned = `${header}.${claims}`;
-  const key = await crypto.subtle.importKey("pkcs8", pemToBytes(credentials.private_key), { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" }, false, ["sign"]);
-  const signature = await crypto.subtle.sign("RSASSA-PKCS1-v1_5", key, encoder.encode(unsigned));
-  const assertion = `${unsigned}.${base64Url(new Uint8Array(signature))}`;
-  const response = await fetch(GOOGLE_TOKEN_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({ grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer", assertion })
-  });
-  const body = await response.json().catch(() => ({}));
-  if (!response.ok || !body.access_token) throw new Error(`Google authentication failed (${response.status}): ${body.error_description || body.error || "unknown error"}`);
-  return body.access_token;
-}
-
-async function boundedText(response) {
-  const declaredLength = Number(response.headers.get("content-length") || 0);
-  if (declaredLength > MAX_TEXT_BYTES) throw new Error(`Response exceeds ${MAX_TEXT_BYTES} bytes`);
-  const text = await response.text();
-  if (encoder.encode(text).byteLength > MAX_TEXT_BYTES) throw new Error(`Response exceeds ${MAX_TEXT_BYTES} bytes`);
-  return text;
-}
-
-function xmlLocations(xml) {
-  return [...xml.matchAll(/<loc\b[^>]*>([\s\S]*?)<\/loc>/gi)].map(match => match[1].replace(/&amp;/g, "&").trim()).filter(Boolean);
-}
-
-function normalizeUrl(value) {
-  const url = new URL(value);
-  url.hash = "";
-  url.hostname = url.hostname.toLowerCase();
-  if (url.pathname !== "/") url.pathname = url.pathname.replace(/\/$/, "");
-  return url.href;
-}
-
-function canonicalFromHtml(html, pageUrl) {
-  const match = html.match(/<link\b[^>]*rel=["']canonical["'][^>]*href=["']([^"']+)["']/i)
-    || html.match(/<link\b[^>]*href=["']([^"']+)["'][^>]*rel=["']canonical["']/i);
-  if (!match) return null;
-  try { return new URL(match[1], pageUrl).href; }
-  catch { return null; }
-}
-
-function visibleWordCount(html) {
-  return html
-    .replace(/<script\b[\s\S]*?<\/script>/gi, " ")
-    .replace(/<style\b[\s\S]*?<\/style>/gi, " ")
-    .replace(/<[^>]+>/g, " ")
-    .replace(/&[a-z0-9#]+;/gi, " ")
-    .trim().split(/\s+/).filter(word => /[a-z0-9]/i.test(word)).length;
-}
-
-async function auditPage(pageUrl) {
-  try {
-    const response = await fetch(pageUrl, {
-      redirect: "follow",
-      headers: { "User-Agent": "ADG-Monitor-v4-Indexability/1.0", "Cache-Control": "no-cache" }
-    });
-    const contentType = response.headers.get("content-type") || "";
-    const html = contentType.includes("text/html") ? (await boundedText(response)).slice(0, 1_000_000) : "";
-    const canonical = canonicalFromHtml(html, response.url);
-    const redirectMismatch = normalizeUrl(pageUrl) !== normalizeUrl(response.url);
-    const canonicalMismatch = !canonical || normalizeUrl(canonical) !== normalizeUrl(response.url);
-    const noindex = /<meta\b[^>]*name=["']robots["'][^>]*content=["'][^"']*noindex/i.test(html)
-      || /(?:^|,)\s*noindex\s*(?:,|$)/i.test(response.headers.get("x-robots-tag") || "");
-    const issues = [];
-    const wordCount = visibleWordCount(html);
-    if (!response.ok) issues.push(`HTTP ${response.status}`);
-    if (!contentType.includes("text/html")) issues.push(`Unexpected content type: ${contentType || "missing"}`);
-    if (redirectMismatch) issues.push(`Sitemap URL redirects to ${response.url}`);
-    if (!canonical) issues.push("Missing canonical");
-    else if (canonicalMismatch) issues.push(`Canonical points to ${canonical}`);
-    if (noindex) issues.push("Page is marked noindex");
-    if (wordCount < 350) issues.push(`Thin page: approximately ${wordCount} visible words`);
-    if (/This page is written so the main purpose of the tool is available directly in the HTML/i.test(html)) issues.push("Generic search-engine filler detected");
-    return { url: pageUrl, final_url: response.url, http: response.status, canonical, word_count: wordCount, redirect_mismatch: redirectMismatch, canonical_mismatch: canonicalMismatch, noindex, passed: issues.length === 0, issues };
-  } catch (error) {
-    return { url: pageUrl, passed: false, issues: [error.message] };
-  }
-}
-
-function sameSiteUrl(candidate, siteUrl) {
-  try {
-    const url = new URL(candidate);
-    return url.protocol === "https:" && url.hostname === new URL(siteUrl).hostname;
-  } catch {
-    return false;
-  }
-}
-
-async function sitemapUrls(site) {
-  const candidates = new Set([`${site.url}/sitemap.xml`]);
-  try {
-    const robotsResponse = await fetch(`${site.url}/robots.txt`, { headers: { "User-Agent": "ADG-Monitor-v4/1.1" } });
-    if (robotsResponse.ok) {
-      const robots = await boundedText(robotsResponse);
-      for (const match of robots.matchAll(/^\s*sitemap:\s*(\S+)/gim)) candidates.add(match[1]);
-    }
-  } catch {}
-  return [...candidates].slice(0, MAX_SITEMAPS_PER_SITE);
-}
-
-async function discoverPages(site) {
-  const queue = await sitemapUrls(site);
-  const visitedSitemaps = new Set();
-  const pages = new Set();
-  const errors = [];
-  while (queue.length && visitedSitemaps.size < MAX_SITEMAPS_PER_SITE && pages.size < MAX_PAGES_PER_SITE) {
-    const sitemapUrl = queue.shift();
-    if (visitedSitemaps.has(sitemapUrl)) continue;
-    visitedSitemaps.add(sitemapUrl);
-    try {
-      const response = await fetch(sitemapUrl, { headers: { "User-Agent": "ADG-Monitor-v4/1.1" } });
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      const xml = await boundedText(response);
-      const locations = xmlLocations(xml);
-      if (/<sitemapindex\b/i.test(xml)) {
-        for (const location of locations) {
-          if (queue.length + visitedSitemaps.size >= MAX_SITEMAPS_PER_SITE) break;
-          queue.push(location);
-        }
-      } else {
-        for (const location of locations) {
-          if (pages.size >= MAX_PAGES_PER_SITE) break;
-          if (sameSiteUrl(location, site.url)) pages.add(new URL(location).href);
-        }
-      }
-    } catch (error) {
-      errors.push({ sitemap: sitemapUrl, message: error.message });
-    }
-  }
-  const discoveredPages = [...pages];
-  const duplicateCount = discoveredPages.length - new Set(discoveredPages.map(normalizeUrl)).size;
-  if (duplicateCount) errors.push({ sitemap: "all", message: `${duplicateCount} duplicate URL(s) after normalization` });
-  return { sitemap_urls: [...visitedSitemaps], discovered_pages: discoveredPages, errors };
-}
-
-function searchConsoleProperty(site) {
-  return site.searchConsoleProperty || `sc-domain:${new URL(site.url).hostname}`;
-}
-
-async function submitSitemap(site, sitemapUrl, accessToken) {
-  const endpoint = `${WEBMASTERS_API}/sites/${encodeURIComponent(searchConsoleProperty(site))}/sitemaps/${encodeURIComponent(sitemapUrl)}`;
-  const response = await fetch(endpoint, { method: "PUT", headers: { Authorization: `Bearer ${accessToken}` } });
-  if (!response.ok) throw new Error(`Sitemap submission failed (${response.status}): ${(await response.text()).slice(0, 300)}`);
-  return true;
-}
-
-async function inspectUrl(site, pageUrl, accessToken) {
-  const response = await fetch(INSPECTION_URL, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ inspectionUrl: pageUrl, siteUrl: searchConsoleProperty(site), languageCode: "en-AU" })
-  });
-  const body = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(`URL Inspection failed (${response.status}): ${body.error?.message || "unknown error"}`);
-  const result = body.inspectionResult?.indexStatusResult || {};
-  return {
-    url: pageUrl,
-    verdict: result.verdict || "VERDICT_UNSPECIFIED",
-    coverage_state: result.coverageState || "Unknown",
-    indexing_state: result.indexingState || "Unknown",
-    robots_txt_state: result.robotsTxtState || "Unknown",
-    page_fetch_state: result.pageFetchState || "Unknown",
-    google_canonical: result.googleCanonical || null,
-    user_canonical: result.userCanonical || null,
-    last_crawl_time: result.lastCrawlTime || null
-  };
-}
-
-async function nextRotatingBatch(env, site, pages, count, cursorName) {
-  if (!pages.length) return [];
-  const key = `${cursorName}:${site.id}`;
-  const prior = Number(await env.MONITOR_KV?.get(key) || 0);
-  const start = prior % pages.length;
-  const batchSize = Math.min(count, pages.length);
-  const batch = Array.from({ length: batchSize }, (_, offset) => pages[(start + offset) % pages.length]);
-  await env.MONITOR_KV?.put(key, String((start + batchSize) % pages.length));
-  return batch;
-}
-
-export async function auditIndexing(env, sites, { merge = sites.length === 1 } = {}) {
-  const serviceAccount = env.GSC_SERVICE_ACCOUNT_JSON || env.GSC_SERVICE_ACCOUNT_KEY;
-  const credentialsConfigured = Boolean(serviceAccount);
-  let accessToken = null;
-  let authenticationError = null;
-  if (credentialsConfigured) {
-    try { accessToken = await googleAccessToken(serviceAccount); }
-    catch (error) { authenticationError = error.message; }
-  }
-  const results = [];
-  for (const site of sites) {
-    const discovery = await discoverPages(site);
-    const entry = {
-      id: site.id, name: site.name, url: site.url,
-      search_console_property: searchConsoleProperty(site),
-      sitemap_urls: discovery.sitemap_urls,
-      discovered_count: discovery.discovered_pages.length,
-      discovered_pages: discovery.discovered_pages,
-      discovery_errors: discovery.errors,
-      google_configured: credentialsConfigured,
-      sitemap_submitted: false,
-      inspected_count: 0, indexed_count: 0, not_indexed_count: 0, inspections: [],
-      live_audited_count: 0, live_issue_count: 0, live_audits: []
-    };
-    const liveBatch = await nextRotatingBatch(env, site, discovery.discovered_pages, LIVE_AUDITS_PER_SITE_PER_RUN, "live-audit-cursor-v1");
-    entry.live_audits = await Promise.all(liveBatch.map(auditPage));
-    entry.live_audited_count = entry.live_audits.length;
-    entry.live_issue_count = entry.live_audits.filter(item => !item.passed).length;
-    if (accessToken && discovery.sitemap_urls.length) {
-      try { entry.sitemap_submitted = await submitSitemap(site, discovery.sitemap_urls[0], accessToken); }
-      catch (error) { entry.google_error = error.message; }
-      const batch = await nextRotatingBatch(env, site, discovery.discovered_pages, INSPECTIONS_PER_SITE_PER_RUN, "indexing-cursor-v1");
-      entry.inspections = await Promise.all(batch.map(async pageUrl => {
-        try { return await inspectUrl(site, pageUrl, accessToken); }
-        catch (error) { return { url: pageUrl, verdict: "ERROR", message: error.message }; }
-      }));
-      entry.inspected_count = entry.inspections.length;
-      entry.indexed_count = entry.inspections.filter(item => item.verdict === "PASS").length;
-      entry.not_indexed_count = entry.inspections.filter(item => item.verdict !== "PASS" && item.verdict !== "ERROR").length;
-      entry.canonical_conflict_count = entry.inspections.filter(item => item.google_canonical && item.user_canonical && normalizeUrl(item.google_canonical) !== normalizeUrl(item.user_canonical)).length;
-    }
-    results.push(entry);
-  }
-  const previous = merge ? await env.MONITOR_KV?.get("latest-indexing-report-v1", "json") : null;
-  const mergedSites = merge
-    ? [...(previous?.sites || []).filter(site => !results.some(result => result.id === site.id)), ...results]
-    : results;
-  const report = {
-    version: 1,
-    run_at: new Date().toISOString(),
-    google_configured: credentialsConfigured,
-    authentication_error: authenticationError,
-    inspection_policy: `${INSPECTIONS_PER_SITE_PER_RUN} rotating Google inspections plus ${LIVE_AUDITS_PER_SITE_PER_RUN} live sitemap-page audits for one site per invocation`,
-    sites: mergedSites
-  };
-  await env.MONITOR_KV?.put("latest-indexing-report-v1", JSON.stringify(report));
-  return report;
-}
-
-export async function latestIndexing(env) {
-  return await env.MONITOR_KV?.get("latest-indexing-report-v1", "json") || { status: "no_report", message: "Run /indexing/run first" };
-}
-
+export async function auditIndexing(env,sites,{merge=sites.length===1}={}){const prev=await env.MONITOR_KV?.get("latest-indexing-report-v1","json"),raw=env.GSC_SERVICE_ACCOUNT_JSON||env.GSC_SERVICE_ACCOUNT_KEY,configured=!!raw;let token=null,authErr=null;if(configured)try{token=await googleToken(raw)}catch(e){authErr=e.message}const results=[];for(const site of sites){const old=prev?.sites?.find(x=>x.id===site.id),d=await discover(site),entry={id:site.id,name:site.name,url:site.url,search_console_property:prop(site),sitemap_urls:d.sitemap_urls,discovered_count:d.discovered_pages.length,discovered_pages:d.discovered_pages,discovery_errors:d.errors,google_configured:configured,sitemap_submitted:false,inspected_count:0,indexed_count:0,not_indexed_count:0,inspections:[],live_audited_count:0,live_issue_count:0,live_audits:[],repair_candidates:[],google_observations:[]},liveBatch=await rotate(env,site,d.discovered_pages,LIVE_PER_RUN,"live-audit-cursor-v2"),currentAudits=await mapLimit(liveBatch,auditPage),byUrl=new Map((old?.live_audits||[]).map(x=>[x.url,x]));for(const a of currentAudits)byUrl.set(a.url,a);entry.live_audits=d.discovered_pages.map(u=>byUrl.get(u)).filter(Boolean);const dayAgo=Date.now()-86400000;entry.live_audit_batch_count=currentAudits.length;entry.live_audit_known_count=entry.live_audits.length;entry.live_audited_count=entry.live_audits.filter(x=>x.audited_at&&Date.parse(x.audited_at)>=dayAgo).length;entry.full_daily_crawl_complete=d.discovered_pages.length>0&&entry.live_audited_count===d.discovered_pages.length;entry.live_issue_count=entry.live_audits.filter(x=>!x.passed).length;const disc=d.errors.map(x=>candidate("sitemap_error",site.url,`Sitemap ${x.sitemap}: ${x.message}`,{sitemap:x.sitemap}));if(token&&d.sitemap_urls.length){try{entry.sitemap_submitted=await submit(site,d.sitemap_urls[0],token)}catch(e){entry.google_error=e.message}const b=await batchInspect(env,site,d.discovered_pages,entry.live_audits,old),cur=await Promise.all(b.map(async u=>{try{return await inspect(site,u,token)}catch(e){return{url:u,verdict:"ERROR",message:e.message,inspected_at:new Date().toISOString()}}})),im=new Map((old?.inspections||[]).map(x=>[x.url,x]));for(const x of cur)im.set(x.url,x);entry.inspections=d.discovered_pages.map(u=>im.get(u)).filter(Boolean);entry.inspection_batch_count=cur.length;entry.inspected_count=entry.inspections.filter(x=>x.inspected_at&&Date.parse(x.inspected_at)>=dayAgo).length;entry.indexed_count=entry.inspections.filter(x=>x.verdict==="PASS").length;entry.not_indexed_count=entry.inspections.filter(x=>x.verdict!=="PASS"&&x.verdict!=="ERROR").length;entry.canonical_conflict_count=entry.inspections.filter(x=>x.google_canonical&&x.user_canonical&&norm(x.google_canonical)!==norm(x.user_canonical)).length}entry.google_observations=entry.inspections.map(googleObs).filter(Boolean);entry.repair_candidates=dedupe([...disc,...entry.live_audits.flatMap(x=>x.repair_candidates||[]),...entry.inspections.flatMap(googleRep)]);results.push(entry)}const merged=merge?[...(prev?.sites||[]).filter(x=>!results.some(r=>r.id===x.id)),...results]:results,report={version:2,run_at:new Date().toISOString(),google_configured:configured,authentication_error:authErr,inspection_policy:`Scheduled slices audit ${LIVE_PER_RUN} sitemap URLs and ${INSPECT_PER_RUN} Google URL states per invocation; five daily slices per site cover the ${MAX_PAGES}-URL cap while prioritising technical failures`,sites:merged};await env.MONITOR_KV?.put("latest-indexing-report-v1",JSON.stringify(report));return report}
+export async function latestIndexing(env){return await env.MONITOR_KV?.get("latest-indexing-report-v1","json")||{status:"no_report",message:"Run /indexing/run first"}}
