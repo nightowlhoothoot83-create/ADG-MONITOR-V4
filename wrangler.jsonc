@@ -1,11 +1,12 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "adg-monitor-v4",
-  "main": "src/worker.js",
+  "main": "src/worker-v2.js",
   "compatibility_date": "2026-07-29",
   "observability": { "enabled": true },
   "triggers": { "crons": [
     "0 20 * * *",
+    "10,20,30 20 * * *",
     "*/10 21-22 * * *",
     "0,10,20 23 * * *",
     "40 23 * * *"
