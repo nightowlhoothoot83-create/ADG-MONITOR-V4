@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "test": "node --test",
     "check": "node --check src/worker.js && node --check src/index.js && node --check src/indexing.js && node --check src/repair.js && node --check src/regression.js",
     "check:saas": "node --check src/saas-worker.js && node --check src/saas-testing.js",
     "check:all": "npm run check && npm run check:saas",

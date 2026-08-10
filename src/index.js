@@ -1,6 +1,7 @@
 import { SITES, runRepairCycle, runScheduledRepairCycle } from "./repair.js";
 import { auditIndexing, latestIndexing } from "./indexing.js";
 import { auditRegressions, latestRegressionReport, resetRegressionBaseline } from "./regression.js";
+import { dashboardSummary, indexingIssueItems } from "./reporting.js";
 
 const json = (value, status = 200) => new Response(JSON.stringify(value, null, 2), {
   status,
@@ -72,9 +73,11 @@ function regressionCard(site) {
 
 function dashboard(siteReport, indexingReport = {}, repairReport = {}, regressionReport = {}) {
   const sites = siteReport.sites || [];
-  const online = sites.filter(item => item.status === "up").length;
-  const waiting = sites.filter(item => item.status === "awaiting_deployment").length;
-  const attention = sites.length - online - waiting;
+  const { online, waiting, attention, confirmedRegressions } = dashboardSummary(
+    siteReport,
+    indexingReport,
+    regressionReport,
+  );
   const lastRun = [siteReport.run_at, indexingReport.run_at, repairReport.run_at, regressionReport.run_at].filter(Boolean).sort().at(-1);
   const indexingSites = indexingReport.sites || [];
   const discovered = indexingSites.reduce((total, site) => total + (site.discovered_count || 0), 0);
@@ -82,7 +85,6 @@ function dashboard(siteReport, indexingReport = {}, repairReport = {}, regressio
   const indexed = indexingSites.reduce((total, site) => total + (site.indexed_count || 0), 0);
   const repairItems = (repairReport.results || []).flatMap(result => result.approval?.status === "approval_required" ? [{ site: result.site, changes: result.approval.changes || [] }] : []);
   const regressionSites = regressionReport.sites || [];
-  const confirmedRegressions = regressionSites.filter(site => site.status === "regression_confirmed").length;
 
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
   <title>ADG AdSense Monitor</title><style>
@@ -98,7 +100,8 @@ function dashboard(siteReport, indexingReport = {}, repairReport = {}, regressio
       const allItems = [
         ...(site.discovery_errors || []).map(item => item.message),
         ...(site.live_audits || []).filter(item => !item.passed).flatMap(item => item.issues.map(issue => `${item.url}: ${issue}`)),
-        ...(site.inspections || []).filter(item => item.google_canonical && !sameCanonical(item.google_canonical, item.url)).map(item => `${item.url}: Google selected a different page: ${item.google_canonical}`)
+        ...(site.inspections || []).filter(item => item.google_canonical && !sameCanonical(item.google_canonical, item.url)).map(item => `${item.url}: Google selected a different page: ${item.google_canonical}`),
+        ...indexingIssueItems(site),
       ];
       const monitorErrors = allItems.filter(isMonitorError);
       const issueItems = allItems.filter(item => !isMonitorError(item));
