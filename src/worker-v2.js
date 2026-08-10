@@ -85,6 +85,12 @@ export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
     if (url.pathname === "/quality.json") return json(await latestSiteQuality(env));
+    if (url.pathname === "/report.json") {
+      const response = await monitorWorker.fetch(request, env, ctx);
+      if (!response.ok) return response;
+      const report = await response.json();
+      return json({ ...report, quality: await latestSiteQuality(env) });
+    }
     if (url.pathname === "/quality/run") {
       const siteId = url.searchParams.get("site");
       const sites = siteId ? SITES.filter(site => site.id === siteId) : [await nextManualSite(env)];
