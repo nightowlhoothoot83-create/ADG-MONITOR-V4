@@ -1,12 +1,11 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "adg-saas-monitor",
-  "main": "src/saas-worker.js",
+  "main": "src/saas-worker-v2.js",
   "compatibility_date": "2026-07-29",
   "observability": { "enabled": true },
-  "triggers": { "crons": ["0 22 * * *"] },
+  "triggers": { "crons": ["0,10,20,30,40,50 22 * * *"] },
   "kv_namespaces": [
     { "binding": "MONITOR_KV", "id": "b0ccea6158eb468198c6b80bb2232250" }
   ]
 }
-
