@@ -15,6 +15,13 @@ function siteForQualityCron(scheduledTime) {
   return SITES[index] || SITES[0];
 }
 
+async function nextManualSite(env) {
+  const key = "quality-manual-site-v1";
+  const current = Number(await env.MONITOR_KV?.get(key) || 0) % SITES.length;
+  await env.MONITOR_KV?.put(key, String((current + 1) % SITES.length));
+  return SITES[current];
+}
+
 function esc(value) {
   return String(value ?? "").replace(/[&<>"']/g, c => ({
     "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#039;"
@@ -53,7 +60,7 @@ function qualitySection(report) {
   }).join("");
 
   return `<section id="quality-audit"><div class="section-head"><h2>Content &amp; URL quality</h2><span>${sites.length} sites tracked</span></div>
-    <div class="actions" style="margin:0 0 14px"><a class="button secondary" href="/quality/run">Run quality audit</a><a class="button secondary" href="/quality.json">Quality JSON</a></div>
+    <div class="actions" style="margin:0 0 14px"><a class="button secondary" href="/quality/run">Check next quality site</a>${SITES.map(site => `<a class="button secondary" href="/quality/run?site=${encodeURIComponent(site.id)}">Check ${esc(site.name)}</a>`).join("")}<a class="button secondary" href="/quality.json">Quality JSON</a></div>
     <div class="grid">${cards || `<article class="card waiting"><div class="card-head"><div><h3>No quality report yet</h3><p class="message">Run the quality audit to check internal links and repeated content.</p></div><span class="status">Not started</span></div></article>`}</div>
   </section>`;
 }
@@ -80,7 +87,7 @@ export default {
     if (url.pathname === "/quality.json") return json(await latestSiteQuality(env));
     if (url.pathname === "/quality/run") {
       const siteId = url.searchParams.get("site");
-      const sites = siteId ? SITES.filter(site => site.id === siteId) : SITES;
+      const sites = siteId ? SITES.filter(site => site.id === siteId) : [await nextManualSite(env)];
       if (!sites.length) return json({ error: "Unknown site" }, 400);
       await auditSiteQuality(env, sites);
       return Response.redirect(`${url.origin}/report`, 303);
