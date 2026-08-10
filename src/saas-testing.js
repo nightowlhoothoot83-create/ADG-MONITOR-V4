@@ -2,27 +2,49 @@ import { SAAS_APPS, RAVEN_SHELL_VERSION, runSafeRouteTest } from "./saas-baselin
 
 const TEST_REPORT_KEY = "saas-testing-report-v2";
 const TEST_STATUS_KEY = "saas-testing-status-v2";
+const TEST_CURSOR_KEY = "saas-testing-cursor-v2";
 const now = () => new Date().toISOString();
+
+async function nextApp(env) {
+  const cursor = Number(await env.MONITOR_KV?.get(TEST_CURSOR_KEY) || 0) % SAAS_APPS.length;
+  await env.MONITOR_KV?.put(TEST_CURSOR_KEY, String((cursor + 1) % SAAS_APPS.length));
+  return SAAS_APPS[cursor];
+}
+
+async function previousReport(env) {
+  return await env.MONITOR_KV?.get(TEST_REPORT_KEY, "json") || {
+    version: 2,
+    baseline_version: RAVEN_SHELL_VERSION,
+    mode: "safe_read_only",
+    apps: []
+  };
+}
 
 export async function runSafeSaasTests(env) {
   const startedAt = now();
+  const app = await nextApp(env);
   await env.MONITOR_KV?.put(TEST_STATUS_KEY, JSON.stringify({
     status: "running",
     mode: "safe_read_only",
+    app: app.id,
+    app_name: app.name,
     baseline_version: RAVEN_SHELL_VERSION,
     started_at: startedAt
   }));
 
   try {
-    const apps = [];
-    for (const app of SAAS_APPS) apps.push(await runSafeRouteTest(app));
-
-    const passed = apps.filter(app => app.passed).length;
+    const current = await runSafeRouteTest(app);
+    const old = await previousReport(env);
+    const map = new Map((old.apps || []).map(item => [item.id, item]));
+    map.set(current.id, current);
+    const apps = SAAS_APPS.map(item => map.get(item.id)).filter(Boolean);
+    const passed = apps.filter(item => item.passed).length;
     const report = {
       version: 2,
       baseline_version: RAVEN_SHELL_VERSION,
       mode: "safe_read_only",
       run_at: now(),
+      last_app: app.id,
       safety: {
         mutating_requests: false,
         test_accounts: false,
@@ -30,9 +52,9 @@ export async function runSafeSaasTests(env) {
         publishing: false,
         billing: false,
         deletion: false,
-        note: "GET-only checks confirm homepage availability, a real product-entry/workspace route, any explicitly protected routes, and a safe JSON health endpoint when one exists. A separate /login plus /register page is no longer required because the current Raven Sharp products use different entry patterns."
+        note: "GET-only checks confirm homepage availability, a real product-entry/workspace route, any explicitly protected routes, and a safe JSON health endpoint when one exists. One product is checked per run to stay comfortably inside Worker request limits. A separate /login plus /register page is not required because the current Raven Sharp products use different entry patterns."
       },
-      summary: { passed, needs_attention: apps.length - passed, total: apps.length },
+      summary: { passed, needs_attention: apps.length - passed, checked: apps.length, total: SAAS_APPS.length },
       apps
     };
 
@@ -40,6 +62,8 @@ export async function runSafeSaasTests(env) {
     await env.MONITOR_KV?.put(TEST_STATUS_KEY, JSON.stringify({
       status: "completed",
       mode: "safe_read_only",
+      app: app.id,
+      app_name: app.name,
       baseline_version: RAVEN_SHELL_VERSION,
       started_at: startedAt,
       completed_at: report.run_at
@@ -49,6 +73,8 @@ export async function runSafeSaasTests(env) {
     await env.MONITOR_KV?.put(TEST_STATUS_KEY, JSON.stringify({
       status: "failed",
       mode: "safe_read_only",
+      app: app.id,
+      app_name: app.name,
       baseline_version: RAVEN_SHELL_VERSION,
       started_at: startedAt,
       failed_at: now(),
