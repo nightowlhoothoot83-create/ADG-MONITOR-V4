@@ -1,10 +1,14 @@
 const BASELINE_KEY = "anti-regression-baseline-v1";
 const STATE_KEY = "anti-regression-state-v1";
 const REPORT_KEY = "latest-regression-report-v1";
+const AUDIT_CURSOR_KEY = "anti-regression-audit-cursor-v2";
+const BASELINE_CURSOR_KEY = "anti-regression-baseline-cursor-v2";
 const PUBLISHER_ID = "pub-1904958390525375";
 
-// One canonical request per check keeps the full three-site audit below Worker subrequest limits.
-// Redirects are followed, so Cloudflare may resolve clean URLs to folder or .html pages.
+// A complete site snapshot is intentionally kept together, but only one site is
+// checked per Worker invocation. This avoids Cloudflare subrequest exhaustion
+// when redirect-following adds extra network hops. Results are merged so the
+// dashboard continues to show the latest known state for all three sites.
 const ENDPOINTS = [
   { id: "privacy", path: "/privacy", type: "html" },
   { id: "terms", path: "/terms", type: "html" },
@@ -13,8 +17,8 @@ const ENDPOINTS = [
   { id: "cookies", path: "/cookies", type: "cookie" },
   { id: "ads_txt", path: "/ads.txt", type: "ads" },
   { id: "robots_txt", path: "/robots.txt", type: "robots" },
-  { id: "sitemap", path: "/sitemap.xml", type: "sitemap" }
-  ,{ id: "consent_script", path: "/cookie-consent.js", type: "consent" }
+  { id: "sitemap", path: "/sitemap.xml", type: "sitemap" },
+  { id: "consent_script", path: "/cookie-consent.js", type: "consent" }
 ];
 
 async function readJson(env, key, fallback) {
@@ -24,6 +28,13 @@ async function readJson(env, key, fallback) {
 
 async function writeJson(env, key, value) {
   if (env.MONITOR_KV) await env.MONITOR_KV.put(key, JSON.stringify(value));
+}
+
+async function rotateOne(env, sites, key) {
+  if (sites.length <= 1) return sites;
+  const current = Number(await env.MONITOR_KV?.get(key) || 0) % sites.length;
+  await env.MONITOR_KV?.put(key, String((current + 1) % sites.length));
+  return [sites[current]];
 }
 
 function acceptableContent(type, text) {
@@ -49,7 +60,7 @@ async function checkEndpoint(site, endpoint) {
   try {
     const response = await fetch(url, {
       redirect: "follow",
-      headers: { "User-Agent": "ADG-Monitor-v4-AntiRegression/1.0", "Cache-Control": "no-cache" }
+      headers: { "User-Agent": "ADG-Monitor-v4-AntiRegression/1.1", "Cache-Control": "no-cache" }
     });
     const text = (await response.text()).slice(0, 250_000);
     const finalHost = new URL(response.url).hostname;
@@ -65,7 +76,7 @@ async function checkHomepage(site) {
   try {
     const response = await fetch(site.url, {
       redirect: "follow",
-      headers: { "User-Agent": "ADG-Monitor-v4-AntiRegression/1.0", "Cache-Control": "no-cache" }
+      headers: { "User-Agent": "ADG-Monitor-v4-AntiRegression/1.1", "Cache-Control": "no-cache" }
     });
     const html = (await response.text()).slice(0, 1_000_000);
     return {
@@ -110,7 +121,7 @@ async function snapshotSite(site) {
   const redirects = await checkRedirectPolicy(site);
   const endpoints = {};
   for (const endpoint of ENDPOINTS) endpoints[endpoint.id] = await checkEndpoint(site, endpoint);
-  return { id: site.id, name: site.name, url: site.url, homepage, redirects, endpoints };
+  return { id: site.id, name: site.name, url: site.url, homepage, redirects, endpoints, checked_at: new Date().toISOString() };
 }
 
 async function checkRedirectPolicy(site) {
@@ -118,7 +129,7 @@ async function checkRedirectPolicy(site) {
   const candidates = [`http://${expected.hostname}/`, `https://www.${expected.hostname.replace(/^www\./, "")}/`];
   const results = await Promise.all(candidates.map(async requested => {
     try {
-      const response = await fetch(requested, { redirect: "follow", headers: { "User-Agent": "ADG-Monitor-v4-Redirects/1.0", "Cache-Control": "no-cache" } });
+      const response = await fetch(requested, { redirect: "follow", headers: { "User-Agent": "ADG-Monitor-v4-Redirects/1.1", "Cache-Control": "no-cache" } });
       const final = new URL(response.url);
       return { requested, final_url: response.url, passed: response.ok && final.protocol === "https:" && final.hostname === expected.hostname && final.pathname === "/" };
     } catch (error) { return { requested, passed: false, error: error.message }; }
@@ -161,14 +172,24 @@ function allCriticalPassed(site) {
   return critical.every(key => checks[key] === true);
 }
 
+function mergeSnapshots(previousSites, refreshedSites, preferredOrder) {
+  const map = new Map((previousSites || []).map(site => [site.id, site]));
+  for (const site of refreshedSites) map.set(site.id, site);
+  const ordered = preferredOrder.map(site => map.get(site.id)).filter(Boolean);
+  for (const site of map.values()) if (!ordered.some(item => item.id === site.id)) ordered.push(site);
+  return ordered;
+}
+
 export async function auditRegressions(env, sites) {
   const now = new Date().toISOString();
+  const targets = await rotateOne(env, sites, AUDIT_CURSOR_KEY);
   const baseline = await readJson(env, BASELINE_KEY, { version: 1, sites: {} });
   const previousState = await readJson(env, STATE_KEY, { version: 1, sites: {} });
-  const snapshots = [];
-  const nextState = { version: 1, updated_at: now, sites: {} };
+  const previousReport = await readJson(env, REPORT_KEY, { version: 1, sites: [] });
+  const refreshed = [];
+  const nextState = { version: 1, updated_at: now, sites: { ...(previousState.sites || {}) } };
 
-  for (const site of sites) {
+  for (const site of targets) {
     const current = await snapshotSite(site);
     const baselineSite = baseline.sites?.[site.id];
     const baselineAvailable = Boolean(baselineSite);
@@ -197,20 +218,22 @@ export async function auditRegressions(env, sites) {
         : baselineAvailable || healthyNow
           ? "clean"
           : "baseline_pending";
-    snapshots.push({ ...current, regression: state, status });
+    refreshed.push({ ...current, regression: state, status });
   }
 
   baseline.version = 1;
   baseline.updated_at = now;
+  const mergedSites = mergeSnapshots(previousReport.sites, refreshed, sites);
   const report = {
-    version: 1,
+    version: 2,
     run_at: now,
-    request_budget: "36 live requests for three sites",
-    policy: "Known-good baseline; regressions require two consecutive failures before confirmation",
-    sites: snapshots,
-    confirmed_count: snapshots.filter(site => site.regression.confirmed).length,
-    recheck_count: snapshots.filter(site => site.status === "recheck_required").length,
-    baseline_pending_count: snapshots.filter(site => site.status === "baseline_pending").length
+    checked_sites: targets.map(site => site.id),
+    request_budget: "One complete site snapshot per Worker invocation; three-site report is merged across rotations",
+    policy: "Known-good baseline; regressions require two consecutive failures for the same site before confirmation",
+    sites: mergedSites,
+    confirmed_count: mergedSites.filter(site => site.regression?.confirmed).length,
+    recheck_count: mergedSites.filter(site => site.status === "recheck_required").length,
+    baseline_pending_count: mergedSites.filter(site => site.status === "baseline_pending").length
   };
 
   await Promise.all([
@@ -226,19 +249,40 @@ export async function latestRegressionReport(env) {
 }
 
 export async function resetRegressionBaseline(env, sites) {
-  const snapshots = [];
-  for (const site of sites) snapshots.push(await snapshotSite(site));
-  const unhealthy = snapshots.filter(site => !allCriticalPassed(site));
-  if (unhealthy.length) {
+  const targets = await rotateOne(env, sites, BASELINE_CURSOR_KEY);
+  const site = targets[0];
+  if (!site) return { status: "refused", message: "No site was supplied for baseline reset" };
+
+  const snapshot = await snapshotSite(site);
+  if (!allCriticalPassed(snapshot)) {
     return {
       status: "refused",
-      message: "Baseline was not changed because one or more sites failed critical checks",
-      unhealthy_sites: unhealthy.map(site => site.id)
+      message: "Baseline was not changed because the checked site failed one or more critical checks",
+      unhealthy_sites: [site.id]
     };
   }
-  const baseline = { version: 1, updated_at: new Date().toISOString(), sites: Object.fromEntries(snapshots.map(site => [site.id, site])) };
-  await writeJson(env, BASELINE_KEY, baseline);
-  await writeJson(env, STATE_KEY, { version: 1, updated_at: baseline.updated_at, sites: {} });
-  return { status: "baseline_saved", sites: snapshots.map(site => site.id), saved_at: baseline.updated_at };
-}
 
+  const savedAt = new Date().toISOString();
+  const baseline = await readJson(env, BASELINE_KEY, { version: 1, sites: {} });
+  baseline.version = 1;
+  baseline.updated_at = savedAt;
+  baseline.sites = { ...(baseline.sites || {}), [site.id]: snapshot };
+
+  const state = await readJson(env, STATE_KEY, { version: 1, sites: {} });
+  state.version = 1;
+  state.updated_at = savedAt;
+  state.sites = { ...(state.sites || {}) };
+  delete state.sites[site.id];
+
+  await Promise.all([
+    writeJson(env, BASELINE_KEY, baseline),
+    writeJson(env, STATE_KEY, state)
+  ]);
+
+  return {
+    status: "baseline_saved",
+    site: site.id,
+    saved_at: savedAt,
+    note: sites.length > 1 ? "Baseline reset is rotated one site per approved call to stay within the Worker request budget." : undefined
+  };
+}
