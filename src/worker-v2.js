@@ -7,7 +7,7 @@ const json = (value, status = 200) => new Response(JSON.stringify(value, null, 2
   headers: { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" }
 });
 
-const QUALITY_CRON = "10,20,30 20 * * *";
+const QUALITY_CRON = "0,10,20,30 20 * * *";
 
 function siteForQualityCron(scheduledTime) {
   const minute = new Date(scheduledTime).getUTCMinutes();
@@ -43,7 +43,10 @@ function qualitySection(report) {
     </div>`;
     const issues = [];
     if (site.error) issues.push(site.error);
-    if (site.shared_source_legacy_reference_count) issues.push(`${site.shared_source.path}: ${site.shared_source_legacy_reference_count} .html reference(s)`);
+    if (site.shared_source_legacy_reference_count) {
+      const examples = (site.shared_source?.examples || []).slice(0, 3).join(", ");
+      issues.push(`${site.shared_source.path}: ${site.shared_source_legacy_reference_count} .html reference(s)${examples ? ` — ${examples}` : ""}`);
+    }
     for (const page of site.pages || []) {
       for (const issue of page.issues || []) {
         if (issues.length >= 8) break;
@@ -103,6 +106,10 @@ export default {
 
   async scheduled(event, env, ctx) {
     if (event.cron === QUALITY_CRON) {
+      const minute = new Date(event.scheduledTime).getUTCMinutes();
+      if (minute === 0) {
+        return monitorWorker.scheduled({ ...event, cron: "0 20 * * *" }, env, ctx);
+      }
       ctx.waitUntil(auditSiteQuality(env, [siteForQualityCron(event.scheduledTime)]));
       return;
     }
