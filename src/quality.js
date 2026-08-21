@@ -9,7 +9,8 @@ const GENERIC_PATTERNS = [
   /Enter the dates, numbers or options requested/i,
   /when you need a quick answer without creating an account/i,
   /This page is written so the main purpose of the tool/i,
-  /household planning, school or work tasks, content planning/i
+  /household planning, school or work tasks, content planning/i,
+  /Getting a ballpark figure before speaking to a broker or accountant/i
 ];
 
 const SHARED_SOURCES = {
@@ -159,6 +160,15 @@ async function auditPage(site, url) {
       const genericMatches = GENERIC_PATTERNS.filter(pattern => pattern.test(stripHtml(html))).map(pattern => pattern.source);
       if (genericMatches.length) issues.push(`${genericMatches.length} generic/repeated content pattern(s)`);
 
+      const unfinishedLinks = [
+        ...html.matchAll(/(?:INSERT BROKER LEAD FORM LINK|href=["']\s*(?:#|javascript:void\(0\))\s*["'])/gi)
+      ].map(match => match[0]);
+      if (unfinishedLinks.length) issues.push(`${unfinishedLinks.length} unfinished/placeholder link(s)`);
+
+      const adsenseBeforeConsent = site.id === "mycalctools"
+        && /<script\b[^>]*src=["'][^"']*pagead2\.googlesyndication\.com\/pagead\/js\/adsbygoogle\.js/i.test(html);
+      if (adsenseBeforeConsent) issues.push("AdSense script loads statically before the consent controller");
+
       const uniqueMarker = /data-adg-unique-info=["']true["']/i.test(html);
       if (toolLike(site, traced.finalUrl) && !uniqueMarker) issues.push("Tool page missing ADG unique-content marker");
 
@@ -174,6 +184,8 @@ async function auditPage(site, url) {
         legacy_internal_links: badLinks.slice(0, 20),
         legacy_internal_link_count: badLinks.length,
         generic_pattern_count: genericMatches.length,
+        unfinished_link_count: unfinishedLinks.length,
+        adsense_before_consent: adsenseBeforeConsent,
         unique_content_marker: uniqueMarker,
         word_count: words,
         issues,
