@@ -209,27 +209,24 @@ export async function auditRegressions(env, sites) {
     nextState.sites[site.id] = state;
 
     const healthyNow = allCriticalPassed(current);
-    if (healthyNow && !regressedChecks.length) baseline.sites[site.id] = current;
 
     const status = confirmed
       ? "regression_confirmed"
       : regressedChecks.length
         ? "recheck_required"
-        : baselineAvailable || healthyNow
+        : baselineAvailable
           ? "clean"
           : "baseline_pending";
     refreshed.push({ ...current, regression: state, status });
   }
 
-  baseline.version = 1;
-  baseline.updated_at = now;
   const mergedSites = mergeSnapshots(previousReport.sites, refreshed, sites);
   const report = {
     version: 2,
     run_at: now,
     checked_sites: targets.map(site => site.id),
     request_budget: "One complete site snapshot per Worker invocation; three-site report is merged across rotations",
-    policy: "Known-good baseline; regressions require two consecutive failures for the same site before confirmation",
+    policy: "User-approved known-good baseline only; healthy scans never replace it automatically; regressions require two consecutive failures for confirmation",
     sites: mergedSites,
     confirmed_count: mergedSites.filter(site => site.regression?.confirmed).length,
     recheck_count: mergedSites.filter(site => site.status === "recheck_required").length,
@@ -237,7 +234,6 @@ export async function auditRegressions(env, sites) {
   };
 
   await Promise.all([
-    writeJson(env, BASELINE_KEY, baseline),
     writeJson(env, STATE_KEY, nextState),
     writeJson(env, REPORT_KEY, report)
   ]);
