@@ -7,109 +7,8 @@ const json = (value, status = 200) => new Response(JSON.stringify(value, null, 2
   headers: { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" }
 });
 
-const GITHUB_API = "https://api.github.com";
-const GITHUB_OWNER = "nightowlhoothoot83-create";
-
 function approved(request, env) {
   return Boolean(env.REPAIR_APPROVAL_KEY) && request.headers.get("Authorization") === `Bearer ${env.REPAIR_APPROVAL_KEY}`;
-}
-
-function githubHeaders(token) {
-  return {
-    Authorization: `Bearer ${token}`,
-    Accept: "application/vnd.github+json",
-    "X-GitHub-Api-Version": "2022-11-28",
-    "User-Agent": "adg-monitor-v4"
-  };
-}
-
-async function githubJson(path, token, init = {}) {
-  const response = await fetch(`${GITHUB_API}${path}`, {
-    ...init,
-    headers: {
-      ...githubHeaders(token),
-      ...(init.headers || {})
-    }
-  });
-  const body = response.status === 204 ? null : await response.json().catch(() => null);
-  if (!response.ok) throw new Error(`GitHub ${response.status}: ${body?.message || path}`);
-  return body;
-}
-
-function pullNumberFromUrl(value) {
-  const match = String(value || "").match(/\/pull\/(\d+)(?:$|[/?#])/);
-  return match ? Number(match[1]) : null;
-}
-
-async function markPullReady(repo, pull, token) {
-  if (!pull.draft) return;
-  const query = `mutation($id:ID!){markPullRequestReadyForReview(input:{pullRequestId:$id}){pullRequest{isDraft}}}`;
-  const response = await githubJson("/graphql", token, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ query, variables: { id: pull.node_id } })
-  });
-  if (response?.errors?.length) throw new Error(response.errors.map(error => error.message).join("; "));
-}
-
-async function mergeMonitorPull(site, pullUrl, token) {
-  if (!token) throw new Error("GITHUB_TOKEN is missing");
-  const pullNumber = pullNumberFromUrl(pullUrl);
-  if (!pullNumber) throw new Error(`Could not identify pull request from ${pullUrl}`);
-
-  const repo = `${GITHUB_OWNER}/${site.repo}`;
-  const pull = await githubJson(`/repos/${repo}/pulls/${pullNumber}`, token);
-
-  const safeMonitorPull =
-    pull?.base?.ref === "main"
-    && pull?.head?.ref?.startsWith("adg-monitor-")
-    && pull?.head?.repo?.full_name === repo
-    && String(pull?.title || "").startsWith("ADG Monitor:");
-
-  if (!safeMonitorPull) {
-    throw new Error(`Refusing to auto-merge PR #${pullNumber}: it is not an ADG Monitor repair pull request`);
-  }
-
-  if (pull.merged) {
-    return { status: "already_merged", pull_request: pull.html_url, merge_sha: pull.merge_commit_sha || null };
-  }
-
-  await markPullReady(repo, pull, token);
-
-  const merged = await githubJson(`/repos/${repo}/pulls/${pullNumber}/merge`, token, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      merge_method: "squash",
-      commit_title: `${pull.title} (#${pullNumber})`,
-      commit_message: "Automatically merged by ADG Monitor v4 after explicit repair approval."
-    })
-  });
-
-  if (!merged?.merged) throw new Error(merged?.message || `GitHub did not merge PR #${pullNumber}`);
-  return { status: "merged", pull_request: pull.html_url, merge_sha: merged.sha || null };
-}
-
-async function autoMergeApprovedResults(results, token) {
-  for (const result of results) {
-    const site = SITES.find(item => item.id === result.site);
-    if (!site) continue;
-
-    for (const key of ["automatic", "approval"]) {
-      const repair = result[key];
-      if (!repair?.pull_request || !["pr_opened", "already_proposed"].includes(repair.status)) continue;
-
-      try {
-        const merge = await mergeMonitorPull(site, repair.pull_request, token);
-        repair.merge = merge;
-        repair.status = merge.status;
-      } catch (error) {
-        repair.merge = { status: "merge_failed", message: error.message, pull_request: repair.pull_request };
-        repair.status = "merge_failed";
-      }
-    }
-  }
-  return results;
 }
 
 async function runRepairWithIndexing(env, isApproved) {
@@ -118,11 +17,9 @@ async function runRepairWithIndexing(env, isApproved) {
     ? await runRepairCycle(env.GITHUB_TOKEN, indexing)
     : await runScheduledRepairCycle(env.GITHUB_TOKEN, indexing);
 
-  if (isApproved) await autoMergeApprovedResults(results, env.GITHUB_TOKEN);
-
   const report = {
     run_at: new Date().toISOString(),
-    mode: isApproved ? "approved_auto_merge" : "scheduled_safe",
+    mode: isApproved ? "approved_draft_prs" : "scheduled_safe",
     indexing_report_version: indexing.version || null,
     results
   };
@@ -150,7 +47,7 @@ async function enhanceDashboardResponse(response) {
     .replaceAll("Indexed <b>", "Indexed in checked set <b>")
     .replaceAll(
       "These changes require your approval before a repair pull request is created.",
-      "Approve these changes once. ADG Monitor will create the repair pull request, merge it automatically, and let Cloudflare Pages deploy from main."
+      "Approve these changes to create a draft repair pull request. Review its tests and preview, then merge it manually before Cloudflare Pages deploys from main."
     );
 
   const styles = `<style>
