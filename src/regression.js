@@ -2,8 +2,9 @@ const BASELINE_KEY = "anti-regression-baseline-v1";
 const STATE_KEY = "anti-regression-state-v1";
 const REPORT_KEY = "latest-regression-report-v1";
 const AUDIT_CURSOR_KEY = "anti-regression-audit-cursor-v2";
-const BASELINE_CURSOR_KEY = "anti-regression-baseline-cursor-v2";
 const PUBLISHER_ID = "pub-1904958390525375";
+const QUALITY_REPORT_KEY = "latest-quality-report-v1";
+const QUALITY_MAX_AGE_MS = 48 * 60 * 60 * 1000;
 
 // A complete site snapshot is intentionally kept together, but only one site is
 // checked per Worker invocation. This avoids Cloudflare subrequest exhaustion
@@ -159,6 +160,83 @@ function compareKnownGood(baselineSite, currentSite) {
     .map(([key]) => key);
 }
 
+export function qualityManifestForSite(report, siteId, now = Date.now()) {
+  const site = report?.sites?.find(item => item.id === siteId);
+  if (!site) return { eligible: false, reason: "No quality report exists for this site" };
+  if (!site.full_recent_coverage || site.known_recent_count !== site.discovered_count) {
+    return { eligible: false, reason: "The quality audit does not have fresh coverage for every sitemap page" };
+  }
+  if (site.status !== "clean" || site.issue_page_count > 0 || site.shared_source_legacy_reference_count > 0) {
+    return { eligible: false, reason: "The quality report contains unresolved failures" };
+  }
+  const pages = site.pages || [];
+  if (!pages.length || pages.some(page => !page.passed || !page.signature?.content_sha256)) {
+    return { eligible: false, reason: "One or more sitemap pages lacks a passing structural signature" };
+  }
+  const timestamps = pages.map(page => Date.parse(page.audited_at)).filter(Number.isFinite);
+  if (timestamps.length !== pages.length || Math.min(...timestamps) < now - QUALITY_MAX_AGE_MS) {
+    return { eligible: false, reason: "One or more page signatures is older than 48 hours" };
+  }
+  const assets = site.shared_assets || [];
+  if (!assets.length || assets.some(asset => !asset.passed || !asset.content_sha256)) {
+    return { eligible: false, reason: "One or more shared visual or behavior assets lacks a passing signature" };
+  }
+  return {
+    eligible: true,
+    generated_at: report.run_at,
+    discovered_count: site.discovered_count,
+    assets: Object.fromEntries(assets.map(asset => [asset.path, {
+      http: asset.http,
+      content_type: asset.content_type || null,
+      content_sha256: asset.content_sha256 || null,
+      byte_length: asset.byte_length ?? null
+    }])),
+    pages: Object.fromEntries(pages.map(page => [normalizedUrl(page.url), {
+      final_url: normalizedUrl(page.final_url || page.url),
+      canonical: page.canonical ? normalizedUrl(page.canonical) : null,
+      word_count: page.word_count,
+      ...page.signature
+    }]))
+  };
+}
+
+export function compareQualityManifests(baseline, current) {
+  if (!baseline?.eligible) return [];
+  if (!current?.eligible) return [`quality.manifest_unavailable: ${current?.reason || "unknown reason"}`];
+  const failures = [];
+  const baselinePages = baseline.pages || {};
+  const currentPages = current.pages || {};
+  const baselineAssets = baseline.assets || {};
+  const currentAssets = current.assets || {};
+  for (const path of Object.keys(baselineAssets)) {
+    if (!currentAssets[path]) { failures.push(`quality.asset_removed:${path}`); continue; }
+    for (const field of ["http", "content_type", "content_sha256", "byte_length"]) {
+      if (baselineAssets[path][field] !== currentAssets[path][field]) failures.push(`quality.asset_${field}:${path}`);
+    }
+  }
+  for (const path of Object.keys(currentAssets)) if (!baselineAssets[path]) failures.push(`quality.asset_added:${path}`);
+  for (const url of Object.keys(baselinePages)) {
+    if (!currentPages[url]) { failures.push(`quality.page_removed:${url}`); continue; }
+    for (const field of ["final_url", "canonical", "content_sha256", "h1_count", "heading_count", "footer_count", "image_count", "internal_link_count", "form_control_count"]) {
+      if (baselinePages[url][field] !== currentPages[url][field]) failures.push(`quality.${field}:${url}`);
+    }
+    if ((currentPages[url].word_count || 0) < (baselinePages[url].word_count || 0)) failures.push(`quality.word_count_reduced:${url}`);
+  }
+  for (const url of Object.keys(currentPages)) if (!baselinePages[url]) failures.push(`quality.page_added:${url}`);
+  return failures;
+}
+
+export function nextRegressionState(previous = {}, regressedChecks = [], now = new Date().toISOString()) {
+  const consecutiveFailures = regressedChecks.length ? (previous.consecutive_failures || 0) + 1 : 0;
+  return {
+    consecutive_failures: consecutiveFailures,
+    first_failed_at: regressedChecks.length ? previous.first_failed_at || now : null,
+    last_failed_at: regressedChecks.length ? now : null,
+    regressed_checks: regressedChecks,
+    confirmed: regressedChecks.length > 0 && consecutiveFailures >= 2
+  };
+}
+
 function allCriticalPassed(site) {
   const checks = flattenPasses(site);
   const critical = [
@@ -186,6 +264,7 @@ export async function auditRegressions(env, sites) {
   const baseline = await readJson(env, BASELINE_KEY, { version: 1, sites: {} });
   const previousState = await readJson(env, STATE_KEY, { version: 1, sites: {} });
   const previousReport = await readJson(env, REPORT_KEY, { version: 1, sites: [] });
+  const qualityReport = await readJson(env, QUALITY_REPORT_KEY, { version: 2, sites: [] });
   const refreshed = [];
   const nextState = { version: 1, updated_at: now, sites: { ...(previousState.sites || {}) } };
 
@@ -193,24 +272,22 @@ export async function auditRegressions(env, sites) {
     const current = await snapshotSite(site);
     const baselineSite = baseline.sites?.[site.id];
     const baselineAvailable = Boolean(baselineSite);
-    const regressedChecks = compareKnownGood(baselineSite, current);
+    const endpointRegressions = compareKnownGood(baselineSite, current);
+    const currentQuality = qualityManifestForSite(qualityReport, site.id);
+    const qualityRegressions = compareQualityManifests(baselineSite?.quality_manifest, currentQuality);
+    const regressedChecks = [...endpointRegressions, ...qualityRegressions];
     const previous = previousState.sites?.[site.id] || {};
-    const consecutiveFailures = regressedChecks.length ? (previous.consecutive_failures || 0) + 1 : 0;
-    const confirmed = regressedChecks.length > 0 && consecutiveFailures >= 2;
-
     const state = {
       baseline_available: baselineAvailable,
-      consecutive_failures: consecutiveFailures,
-      first_failed_at: regressedChecks.length ? previous.first_failed_at || now : null,
-      last_failed_at: regressedChecks.length ? now : null,
-      regressed_checks: regressedChecks,
-      confirmed
+      ...nextRegressionState(previous, regressedChecks, now),
+      endpoint_regressions: endpointRegressions,
+      quality_regressions: qualityRegressions
     };
     nextState.sites[site.id] = state;
 
     const healthyNow = allCriticalPassed(current);
 
-    const status = confirmed
+    const status = state.confirmed
       ? "regression_confirmed"
       : regressedChecks.length
         ? "recheck_required"
@@ -244,9 +321,10 @@ export async function latestRegressionReport(env) {
   return readJson(env, REPORT_KEY, { status: "no_report", message: "No anti-regression check has run yet", sites: [] });
 }
 
-export async function resetRegressionBaseline(env, sites) {
-  const targets = await rotateOne(env, sites, BASELINE_CURSOR_KEY);
-  const site = targets[0];
+export async function resetRegressionBaseline(env, sites, requestedSiteId = null) {
+  const site = requestedSiteId
+    ? sites.find(item => item.id === requestedSiteId)
+    : sites.length === 1 ? sites[0] : null;
   if (!site) return { status: "refused", message: "No site was supplied for baseline reset" };
 
   const snapshot = await snapshotSite(site);
@@ -258,11 +336,17 @@ export async function resetRegressionBaseline(env, sites) {
     };
   }
 
+  const qualityReport = await readJson(env, QUALITY_REPORT_KEY, { version: 2, sites: [] });
+  const qualityManifest = qualityManifestForSite(qualityReport, site.id);
+  if (!qualityManifest.eligible) {
+    return { status: "refused", message: `Baseline was not changed: ${qualityManifest.reason}`, site: site.id };
+  }
+
   const savedAt = new Date().toISOString();
   const baseline = await readJson(env, BASELINE_KEY, { version: 1, sites: {} });
-  baseline.version = 1;
+  baseline.version = 2;
   baseline.updated_at = savedAt;
-  baseline.sites = { ...(baseline.sites || {}), [site.id]: snapshot };
+  baseline.sites = { ...(baseline.sites || {}), [site.id]: { ...snapshot, quality_manifest: qualityManifest } };
 
   const state = await readJson(env, STATE_KEY, { version: 1, sites: {} });
   state.version = 1;
@@ -279,6 +363,7 @@ export async function resetRegressionBaseline(env, sites) {
     status: "baseline_saved",
     site: site.id,
     saved_at: savedAt,
-    note: sites.length > 1 ? "Baseline reset is rotated one site per approved call to stay within the Worker request budget." : undefined
+    manifest_pages: qualityManifest.discovered_count,
+    note: "This explicit, approved baseline includes the homepage, infrastructure endpoints and every freshly audited sitemap page signature."
   };
 }

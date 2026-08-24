@@ -283,7 +283,10 @@ export default {
     if (url.pathname === "/regression/report.json") return json(await latestRegressionReport(env));
     if (url.pathname === "/regression/baseline" && request.method === "POST") {
       if (!approved(request, env)) return json({ error: "Baseline reset approval required" }, 403);
-      return json(await resetRegressionBaseline(env, SITES));
+      const siteId = url.searchParams.get("site");
+      if (!siteId) return json({ error: "An explicit ?site=mycalctools, ?site=mycalendartools or ?site=wheel selection is required" }, 400);
+      if (!SITES.some(site => site.id === siteId)) return json({ error: "Unknown site" }, 400);
+      return json(await resetRegressionBaseline(env, SITES, siteId));
     }
     if (url.pathname === "/") return Response.redirect(`${url.origin}/report`, 302);
     return json({ service: "ADG AdSense Monitor", endpoints: ["/health", "/adsense/run", "/report", "/report.json", "/regression/run", "/regression/report.json", "POST /regression/baseline", "/indexing/run?site=mycalctools", "/indexing/report.json", "/repair/scan", "POST /repair/run"] });

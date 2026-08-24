@@ -10,6 +10,7 @@ Cloudflare Worker source for the Ascension Digital Group AdSense-site monitor.
 - A human reviews and merges each repair.
 - Cloudflare Pages performs the production deployment after merge.
 - The repair endpoint requires the encrypted `REPAIR_APPROVAL_KEY` secret.
+- Baselines are never replaced by a scheduled run. An approved baseline save must name one site explicitly and is refused unless fresh full-sitemap quality coverage is clean.
 
 ## Managed sites
 
@@ -62,5 +63,9 @@ If the secret value is no longer known, replace `REPAIR_APPROVAL_KEY` in the Wor
 - `GSC_SERVICE_ACCOUNT_KEY`: Google service-account JSON with Search Console access
 
 Google's general Search Console API supports sitemap submission and URL inspection. Direct Indexing API notifications are intentionally excluded because Google restricts them to qualifying job-posting and livestream pages.
+
+## Regression baselines
+
+`POST /regression/baseline?site=<id>` requires `Authorization: Bearer <REPAIR_APPROVAL_KEY>`. Valid IDs are `mycalctools`, `mycalendartools`, and `wheel`. A saved v2 baseline contains the homepage and policy/infrastructure checks plus a structural signature for every freshly audited sitemap page and hashes of the shared CSS, JavaScript and consent assets that control the visual system. The monitor detects removed or added pages/assets, changed canonicals/final URLs, content or stylesheet/script hashes, lost headings/footers/images/links/form controls, and reduced word counts. A difference is reported for recheck and becomes confirmed only after two consecutive checks of that site.
 
 

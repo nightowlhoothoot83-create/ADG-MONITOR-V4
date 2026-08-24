@@ -13,9 +13,33 @@ const GENERIC_PATTERNS = [
   /Getting a ballpark figure before speaking to a broker or accountant/i
 ];
 
+async function sha256(value) {
+  const bytes = new TextEncoder().encode(value);
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function count(html, pattern) {
+  return [...html.matchAll(pattern)].length;
+}
+
+async function structuralSignature(html) {
+  const normalized = html.replace(/\r\n/g, "\n").replace(/[ \t]+/g, " ").trim();
+  return {
+    content_sha256: await sha256(normalized),
+    h1_count: count(html, /<h1\b/gi),
+    heading_count: count(html, /<h[1-6]\b/gi),
+    footer_count: count(html, /<footer\b/gi),
+    image_count: count(html, /<img\b/gi),
+    internal_link_count: hrefs(html).filter(value => /^\/(?!\/)/.test(value)).length,
+    form_control_count: count(html, /<(?:input|select|textarea|button)\b/gi)
+  };
+}
+
 const SHARED_SOURCES = {
-  mycalctools: "/script.js",
-  mycalendartools: "/components.js"
+  mycalctools: ["/style.css", "/script.js", "/cookie-consent.js"],
+  mycalendartools: ["/style.css", "/components.js", "/cookie-consent.js"],
+  wheel: ["/cookie-consent.js"]
 };
 
 function host(value) {
@@ -188,6 +212,7 @@ async function auditPage(site, url) {
         adsense_before_consent: adsenseBeforeConsent,
         unique_content_marker: uniqueMarker,
         word_count: words,
+        signature: await structuralSignature(html),
         issues,
         advisories,
         passed: issues.length === 0,
@@ -211,24 +236,34 @@ async function auditPage(site, url) {
 }
 
 async function auditSharedSource(site) {
-  const path = SHARED_SOURCES[site.id];
-  if (!path) return null;
+  const paths = SHARED_SOURCES[site.id] || [];
+  if (!paths.length) return [];
+  const results = [];
+  for (const path of paths) {
   try {
     const response = await fetch(`${site.url}${path}`, {
       headers: { "User-Agent": "ADG-Monitor-v4-Quality/1.0", "Cache-Control": "no-cache" }
     });
     const text = response.ok ? await readBody(response) : "";
+    const contentType = response.headers.get("content-type") || "";
+    const expectedType = path.endsWith(".css") ? "text/css" : "javascript";
+    const correctType = contentType.toLowerCase().includes(expectedType);
     const htmlRefs = [...text.matchAll(/(?:\/|["'`])[^"'`\s]*\.html(?:[#?"'`]|\b)/gi)].map(m => m[0]).slice(0, 50);
-    return {
+    results.push({
       path,
       http: response.status,
+      content_type: contentType,
+      content_sha256: response.ok ? await sha256(text.replace(/\r\n/g, "\n")) : null,
+      byte_length: new TextEncoder().encode(text).byteLength,
       legacy_html_reference_count: htmlRefs.length,
       examples: htmlRefs.slice(0, 12),
-      passed: response.ok && htmlRefs.length === 0
-    };
+      passed: response.ok && correctType && htmlRefs.length === 0
+    });
   } catch (error) {
-    return { path, passed: false, error: error.message, legacy_html_reference_count: 0, examples: [] };
+    results.push({ path, passed: false, error: error.message, legacy_html_reference_count: 0, examples: [] });
   }
+  }
+  return results;
 }
 
 async function readReport(env) {
@@ -255,14 +290,16 @@ export async function auditSiteQuality(env, sites) {
       const map = new Map((old?.pages || []).filter(p => p.audited_at && Date.parse(p.audited_at) >= freshAfter).map(p => [p.url, p]));
       for (const page of current) map.set(page.url, page);
       const known = pages.map(url => map.get(url)).filter(Boolean);
-      const shared = await auditSharedSource(site);
+      const sharedAssets = await auditSharedSource(site);
+      const shared = sharedAssets[0] || null;
 
       const issuePages = known.filter(page => !page.passed);
       const legacyLinks = known.reduce((n, page) => n + (page.legacy_internal_link_count || 0), 0);
       const genericCount = known.reduce((n, page) => n + (page.generic_pattern_count || 0), 0);
       const missingUnique = known.filter(page => toolLike(site, page.url) && page.unique_content_marker === false).length;
       const thin = known.reduce((n, page) => n + (page.advisories?.filter(x => /Thin-content/i.test(x)).length || 0), 0);
-      const sharedLegacy = shared?.legacy_html_reference_count || 0;
+      const sharedLegacy = sharedAssets.reduce((total, asset) => total + (asset.legacy_html_reference_count || 0), 0);
+      const sharedFailures = sharedAssets.filter(asset => !asset.passed).length;
 
       updates.push({
         id: site.id,
@@ -279,8 +316,9 @@ export async function auditSiteQuality(env, sites) {
         missing_unique_content_count: missingUnique,
         thin_content_advisory_count: thin,
         shared_source: shared,
+        shared_assets: sharedAssets,
         pages: known,
-        status: issuePages.length || sharedLegacy ? "needs_attention" : "clean",
+        status: issuePages.length || sharedLegacy || sharedFailures ? "needs_attention" : "clean",
         run_at: new Date().toISOString()
       });
     } catch (error) {
@@ -302,7 +340,7 @@ export async function auditSiteQuality(env, sites) {
   ];
 
   const report = {
-    version: 1,
+    version: 2,
     run_at: new Date().toISOString(),
     policy: "Checks sitemap pages for redirect/canonical hygiene, internal .html links, generic repeated copy, MyCalcTools unique-content markers and thin-content advisories. Shared navigation scripts are scanned separately for legacy .html references.",
     sites: merged
