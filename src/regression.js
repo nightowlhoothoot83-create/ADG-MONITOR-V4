@@ -279,6 +279,8 @@ export async function auditRegressions(env, sites) {
     const previous = previousState.sites?.[site.id] || {};
     const state = {
       baseline_available: baselineAvailable,
+      baseline_saved_at: baselineSite?.quality_manifest?.generated_at || baseline.updated_at || null,
+      baseline_manifest_pages: baselineSite?.quality_manifest?.discovered_count || 0,
       ...nextRegressionState(previous, regressedChecks, now),
       endpoint_regressions: endpointRegressions,
       quality_regressions: qualityRegressions

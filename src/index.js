@@ -64,9 +64,11 @@ function regressionCard(site) {
   const tone = confirmed ? "error" : pending ? "waiting" : "healthy";
   const label = confirmed ? "Confirmed regression" : pending ? "Recheck pending" : "Protected";
   const failures = site.regression?.regressed_checks || [];
+  const savedAt = site.regression?.baseline_saved_at;
   return `<article class="card ${tone}">
     <div class="card-head"><div><h3>${escapeHtml(site.name)}</h3><p class="message">Known-good baseline comparison</p></div><span class="status">${label}</span></div>
-    <div class="metrics"><span>Consecutive failures <b>${site.regression?.consecutive_failures || 0}</b></span></div>
+    <div class="metrics"><span>Baseline pages <b>${site.regression?.baseline_manifest_pages || 0}</b></span><span>Consecutive failures <b>${site.regression?.consecutive_failures || 0}</b></span></div>
+    ${savedAt ? `<p class="message">Approved baseline: ${escapeHtml(new Date(savedAt).toLocaleString("en-AU", { timeZone: "Australia/Brisbane", dateStyle: "medium", timeStyle: "short" }))} Brisbane time</p>` : ""}
     ${failures.length ? `<ul class="checks">${failures.map(failure => `<li class="fail"><span>!</span>${escapeHtml(failure)}</li>`).join("")}</ul>` : '<p class="message">No previously healthy check has fallen backwards.</p>'}
   </article>`;
 }
@@ -92,7 +94,7 @@ function dashboard(siteReport, indexingReport = {}, repairReport = {}, regressio
   </style></head><body><main><header><div><h1>ADG AdSense Monitor</h1><p class="subtitle">AdSense sites only: compliance, indexing, regression protection and controlled repairs.</p></div><div class="actions"><a class="button" href="/adsense/run">Run AdSense monitor</a><a class="button secondary" href="/regression/run">Check regressions</a><a class="button secondary" href="/indexing/run">Index next site</a><a class="button secondary" href="/repair/scan">Check repairs</a><a class="button secondary" href="/report.json">Raw data</a><a class="button secondary" href="https://adg-saas-monitor.ascensiondigitalagency.workers.dev/">Open SaaS monitor</a></div></header>
   <p class="updated">Last updated: ${lastRun ? escapeHtml(new Date(lastRun).toLocaleString("en-AU", { timeZone: "Australia/Brisbane", dateStyle: "medium", timeStyle: "short" })) : "No report yet"} Brisbane time</p>
   <div class="summary"><div><b>${online}</b><span>Online</span></div><div><b>${attention}</b><span>Need attention</span></div><div><b>${waiting}</b><span>Awaiting deployment</span></div><div><b>${confirmedRegressions}</b><span>Confirmed regressions</span></div></div>
-  <section><div class="section-head"><h2>Anti-regression guard</h2><span>${regressionSites.length} protected sites</span></div><div class="grid">${regressionSites.map(regressionCard).join("") || '<article class="card waiting"><div class="card-head"><div><h3>No baseline report yet</h3><p class="message">Run the anti-regression check to establish healthy known-good snapshots.</p></div><span class="status">Not started</span></div></article>'}</div></section>
+  <section><div class="section-head"><h2>Anti-regression guard</h2><span>${regressionSites.length} protected sites</span></div><div class="actions" style="margin:0 0 14px">${SITES.map(site => `<button class="button secondary save-baseline" type="button" data-site="${escapeHtml(site.id)}">Save approved ${escapeHtml(site.name)} baseline</button>`).join("")}<span id="baseline-status" class="message" role="status"></span></div><div class="grid">${regressionSites.map(regressionCard).join("") || '<article class="card waiting"><div class="card-head"><div><h3>No baseline report yet</h3><p class="message">Run the full quality scan, then explicitly save each approved known-good site here.</p></div><span class="status">Not started</span></div></article>'}</div></section>
   <section><div class="section-head"><h2>Homepage health &amp; AdSense readiness</h2><span>${sites.length} homepages</span></div><div class="grid">${sites.map(card).join("") || "<p>No homepage report yet.</p>"}</div></section>
   <section><div class="section-head"><h2>Page indexing</h2><span>${discovered} pages discovered</span></div><div class="actions" style="margin:0 0 14px">${SITES.map(site => `<a class="button secondary" href="/indexing/run?site=${encodeURIComponent(site.id)}">Check ${escapeHtml(site.name)}</a>`).join("")}</div><div class="grid">
     <article class="card ${indexingReport.google_configured ? "healthy" : "waiting"}"><div class="card-head"><div><h3>Google Search Console</h3><p class="message">${indexingReport.google_configured ? "Connected" : "Setup required: add the GSC service account secret"}</p></div><span class="status">${indexingReport.google_configured ? "Active" : "Setup required"}</span></div><div class="metrics"><span>Inspected <b>${inspected}</b></span><span>Indexed <b>${indexed}</b></span></div>${indexingReport.authentication_error ? `<p class="message">${escapeHtml(indexingReport.authentication_error)}</p>` : ""}</article>
@@ -113,6 +115,25 @@ function dashboard(siteReport, indexingReport = {}, repairReport = {}, regressio
   <footer>Regressions are confirmed only after two consecutive failures. Baseline resets and consequential repairs require the approval key.</footer></main>
   <script>
   (() => {
+    const baselineButtons = [...document.querySelectorAll('.save-baseline')];
+    const baselineStatus = document.getElementById('baseline-status');
+    baselineButtons.forEach(baselineButton => baselineButton.addEventListener('click', async () => {
+      const site = baselineButton.dataset.site;
+      const key = window.prompt('Enter the ADG Monitor approval key to replace only the selected site baseline. The key is not saved in the page.');
+      if (!key) return;
+      baselineButtons.forEach(item => { item.disabled = true; });
+      baselineStatus.textContent = 'Validating every sitemap page and shared asset before savingâ€¦';
+      try {
+        const response = await fetch('/regression/baseline?site=' + encodeURIComponent(site), { method: 'POST', headers: { Authorization: 'Bearer ' + key } });
+        const result = await response.json();
+        if (!response.ok || result.status !== 'baseline_saved') throw new Error(result.message || result.error || 'Baseline was refused');
+        baselineStatus.textContent = 'Approved baseline saved for ' + site + ' (' + result.manifest_pages + ' pages). Running comparisonâ€¦';
+        window.setTimeout(() => window.location.assign('/regression/run'), 1200);
+      } catch (error) {
+        baselineStatus.textContent = error.message;
+        baselineButtons.forEach(item => { item.disabled = false; });
+      }
+    }));
     const button = document.getElementById('approve-repairs');
     if (!button) return;
     const status = document.getElementById('approval-status');
