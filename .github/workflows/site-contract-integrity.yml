@@ -1,0 +1,29 @@
+name: AdSense site contract integrity
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, 'repair/**']
+    paths:
+      - 'scripts/check-site-contracts.mjs'
+      - 'package.json'
+      - '.github/workflows/site-contract-integrity.yml'
+  schedule:
+    - cron: '17 */6 * * *'
+
+permissions:
+  contents: read
+
+jobs:
+  verify-live-sites:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Validate monitor source
+        run: npm run check
+      - name: Check all sitemap routes, links and visual contracts
+        run: npm run check:sites
