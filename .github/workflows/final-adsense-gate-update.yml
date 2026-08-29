@@ -1,0 +1,70 @@
+name: Final AdSense monitor gate update
+
+on:
+  push:
+    branches: [codex/full-regression-baselines]
+    paths:
+      - .github/workflows/final-adsense-gate-update.yml
+
+permissions:
+  contents: write
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: codex/full-regression-baselines
+          fetch-depth: 0
+      - name: Add critical-route and image-delivery regression signals
+        shell: python
+        run: |
+          from pathlib import Path
+          p=Path('src/quality.js')
+          s=p.read_text(encoding='utf-8')
+
+          old='''const SHARED_SOURCES = {\n  mycalctools: ["/style.css", "/script.js", "/cookie-consent.js"],\n  mycalendartools: ["/style.css", "/components.js", "/cookie-consent.js"],\n  wheel: ["/cookie-consent.js"]\n};'''
+          new=old+'''\n\nconst CRITICAL_ROUTES = {\n  mycalctools: ["/bmi-calculator", "/calorie-calculator"],\n  mycalendartools: ["/privacy/", "/days-until-christmas/", "/days-between/"],\n  wheel: ["/coin-toss", "/dice-roller", "/lucky-dip"]\n};'''
+          if old not in s: raise SystemExit('SHARED_SOURCES anchor not found')
+          s=s.replace(old,new,1)
+
+          old_sig='''    footer_count: count(html, /<footer\\b/gi),\n    image_count: count(html, /<img\\b/gi),\n    internal_link_count: hrefs(html).filter(value => /^\\/(?!\\/)/.test(value)).length,'''
+          new_sig='''    footer_count: count(html, /<footer\\b/gi),\n    image_count: count(html, /<img\\b/gi),\n    lazy_image_count: count(html, /<img\\b[^>]*\\bloading=["']lazy["']/gi),\n    explicitly_sized_image_count: [...html.matchAll(/<img\\b[^>]*>/gi)].filter(match => /\\bwidth=["'][^"']+["']/i.test(match[0]) && /\\bheight=["'][^"']+["']/i.test(match[0])).length,\n    high_priority_image_count: count(html, /<img\\b[^>]*\\bfetchpriority=["']high["']/gi),\n    internal_link_count: hrefs(html).filter(value => /^\\/(?!\\/)/.test(value)).length,'''
+          if old_sig not in s: raise SystemExit('signature anchor not found')
+          s=s.replace(old_sig,new_sig,1)
+
+          anchor='''async function readReport(env) {\n  return await env.MONITOR_KV?.get(REPORT_KEY, "json") || { version: 1, sites: [] };\n}'''
+          insert='''async function auditCriticalRoutes(site) {\n  const routes = CRITICAL_ROUTES[site.id] || [];\n  const results = [];\n  for (const path of routes) {\n    const requested = `${site.url}${path}`;\n    try {\n      const traced = await tracedFetch(requested);\n      const contentType = traced.response.headers.get("content-type") || "";\n      const passed = traced.response.ok && contentType.includes("text/html") && norm(traced.finalUrl) === norm(requested);\n      results.push({\n        path,\n        requested_url: requested,\n        final_url: traced.finalUrl,\n        http: traced.response.status,\n        redirect_chain: traced.chain,\n        content_type: contentType,\n        passed,\n        issue: passed ? null : `Critical route failed clean resolution: HTTP ${traced.response.status}, final ${traced.finalUrl}`\n      });\n    } catch (error) {\n      results.push({ path, requested_url: requested, passed: false, issue: error.message });\n    }\n  }\n  return results;\n}\n\n'''+anchor
+          if anchor not in s: raise SystemExit('readReport anchor not found')
+          s=s.replace(anchor,insert,1)
+
+          old_assets='''      const sharedAssets = await auditSharedSource(site);\n      const shared = sharedAssets[0] || null;\n\n      const issuePages = known.filter(page => !page.passed);'''
+          new_assets='''      const sharedAssets = await auditSharedSource(site);\n      const shared = sharedAssets[0] || null;\n      const criticalRoutes = await auditCriticalRoutes(site);\n\n      const issuePages = known.filter(page => !page.passed);\n      const criticalRouteFailures = criticalRoutes.filter(route => !route.passed);'''
+          if old_assets not in s: raise SystemExit('sharedAssets anchor not found')
+          s=s.replace(old_assets,new_assets,1)
+
+          old_push='''        thin_content_advisory_count: thin,\n        shared_source: shared,\n        shared_assets: sharedAssets,\n        pages: known,\n        status: issuePages.length || sharedLegacy || sharedFailures ? "needs_attention" : "clean",'''
+          new_push='''        thin_content_advisory_count: thin,\n        critical_route_failure_count: criticalRouteFailures.length,\n        critical_routes: criticalRoutes,\n        shared_source: shared,\n        shared_assets: sharedAssets,\n        pages: known,\n        status: issuePages.length || sharedLegacy || sharedFailures || criticalRouteFailures.length ? "needs_attention" : "clean",'''
+          if old_push not in s: raise SystemExit('updates push anchor not found')
+          s=s.replace(old_push,new_push,1)
+
+          s=s.replace('''policy: "Checks sitemap pages for redirect/canonical hygiene, internal .html links, generic repeated copy, MyCalcTools unique-content markers and thin-content advisories. Shared navigation scripts are scanned separately for legacy .html references.",''',
+                      '''policy: "Checks sitemap pages for redirect/canonical hygiene, exact final-readiness critical routes, internal .html links, generic repeated copy, MyCalcTools unique-content markers, thin-content advisories and image-delivery attributes. Shared navigation scripts are scanned separately for legacy .html references.",''',1)
+          p.write_text(s,encoding='utf-8')
+      - name: Run monitor tests
+        run: |
+          npm ci
+          npm test
+          npm run check:all
+      - name: Commit monitor gate update
+        run: |
+          git config user.name "adg-final-readiness"
+          git config user.email "actions@users.noreply.github.com"
+          git add src/quality.js
+          if git diff --cached --quiet; then
+            echo "No changes required"
+          else
+            git commit -m "Monitor final AdSense routes and image delivery"
+            git push origin HEAD:codex/full-regression-baselines
+          fi
