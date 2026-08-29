@@ -31,6 +31,9 @@ async function structuralSignature(html) {
     heading_count: count(html, /<h[1-6]\b/gi),
     footer_count: count(html, /<footer\b/gi),
     image_count: count(html, /<img\b/gi),
+    lazy_image_count: count(html, /<img\b[^>]*\bloading=["']lazy["']/gi),
+    explicitly_sized_image_count: [...html.matchAll(/<img\b[^>]*>/gi)].filter(match => /\bwidth=["'][^"']+["']/i.test(match[0]) && /\bheight=["'][^"']+["']/i.test(match[0])).length,
+    high_priority_image_count: count(html, /<img\b[^>]*\bfetchpriority=["']high["']/gi),
     internal_link_count: hrefs(html).filter(value => /^\/(?!\/)/.test(value)).length,
     form_control_count: count(html, /<(?:input|select|textarea|button)\b/gi)
   };
@@ -40,6 +43,12 @@ const SHARED_SOURCES = {
   mycalctools: ["/style.css", "/script.js", "/cookie-consent.js"],
   mycalendartools: ["/style.css", "/components.js", "/cookie-consent.js"],
   wheel: ["/cookie-consent.js"]
+};
+
+const CRITICAL_ROUTES = {
+  mycalctools: ["/bmi-calculator", "/calorie-calculator"],
+  mycalendartools: ["/privacy/", "/days-until-christmas/", "/days-between/"],
+  wheel: ["/coin-toss", "/dice-roller", "/lucky-dip"]
 };
 
 function host(value) {
@@ -266,6 +275,32 @@ async function auditSharedSource(site) {
   return results;
 }
 
+async function auditCriticalRoutes(site) {
+  const routes = CRITICAL_ROUTES[site.id] || [];
+  const results = [];
+  for (const path of routes) {
+    const requested = `${site.url}${path}`;
+    try {
+      const traced = await tracedFetch(requested);
+      const contentType = traced.response.headers.get("content-type") || "";
+      const passed = traced.response.ok && contentType.includes("text/html") && norm(traced.finalUrl) === norm(requested);
+      results.push({
+        path,
+        requested_url: requested,
+        final_url: traced.finalUrl,
+        http: traced.response.status,
+        redirect_chain: traced.chain,
+        content_type: contentType,
+        passed,
+        issue: passed ? null : `Critical route failed clean resolution: HTTP ${traced.response.status}, final ${traced.finalUrl}`
+      });
+    } catch (error) {
+      results.push({ path, requested_url: requested, passed: false, issue: error.message });
+    }
+  }
+  return results;
+}
+
 async function readReport(env) {
   return await env.MONITOR_KV?.get(REPORT_KEY, "json") || { version: 1, sites: [] };
 }
@@ -292,8 +327,10 @@ export async function auditSiteQuality(env, sites) {
       const known = pages.map(url => map.get(url)).filter(Boolean);
       const sharedAssets = await auditSharedSource(site);
       const shared = sharedAssets[0] || null;
+      const criticalRoutes = await auditCriticalRoutes(site);
 
       const issuePages = known.filter(page => !page.passed);
+      const criticalRouteFailures = criticalRoutes.filter(route => !route.passed);
       const legacyLinks = known.reduce((n, page) => n + (page.legacy_internal_link_count || 0), 0);
       const genericCount = known.reduce((n, page) => n + (page.generic_pattern_count || 0), 0);
       const missingUnique = known.filter(page => toolLike(site, page.url) && page.unique_content_marker === false).length;
@@ -315,10 +352,12 @@ export async function auditSiteQuality(env, sites) {
         generic_content_pattern_count: genericCount,
         missing_unique_content_count: missingUnique,
         thin_content_advisory_count: thin,
+        critical_route_failure_count: criticalRouteFailures.length,
+        critical_routes: criticalRoutes,
         shared_source: shared,
         shared_assets: sharedAssets,
         pages: known,
-        status: issuePages.length || sharedLegacy || sharedFailures ? "needs_attention" : "clean",
+        status: issuePages.length || sharedLegacy || sharedFailures || criticalRouteFailures.length ? "needs_attention" : "clean",
         run_at: new Date().toISOString()
       });
     } catch (error) {
@@ -342,7 +381,7 @@ export async function auditSiteQuality(env, sites) {
   const report = {
     version: 2,
     run_at: new Date().toISOString(),
-    policy: "Checks sitemap pages for redirect/canonical hygiene, internal .html links, generic repeated copy, MyCalcTools unique-content markers and thin-content advisories. Shared navigation scripts are scanned separately for legacy .html references.",
+    policy: "Checks sitemap pages for redirect/canonical hygiene, exact final-readiness critical routes, internal .html links, generic repeated copy, MyCalcTools unique-content markers, thin-content advisories and image-delivery attributes. Shared navigation scripts are scanned separately for legacy .html references.",
     sites: merged
   };
   await writeReport(env, report);
