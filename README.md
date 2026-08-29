@@ -1,71 +1,23 @@
-# ADG Monitor v4
+# ADG Monitor V4
 
-Cloudflare Worker source for the Ascension Digital Group AdSense-site monitor.
+Final AdSense monitor branch: `codex/full-regression-baselines`
 
-## Safety model
+This branch protects the three current AdSense sites only: MyCalcTools, MyCalendarTools and WheelNamePicker.
 
-- Daily audits are read-only.
-- Repairs never edit production directly.
-- Repairs create a dated GitHub branch and pull request.
-- A human reviews and merges each repair.
-- Cloudflare Pages performs the production deployment after merge.
-- The repair endpoint requires the encrypted `REPAIR_APPROVAL_KEY` secret.
-- Baselines are never replaced by a scheduled run. An approved baseline save must name one site explicitly and is refused unless fresh full-sitemap quality coverage is clean.
+Final gate coverage now includes:
+- explicit approval-only baseline saves
+- full recent sitemap coverage before a baseline can be approved
+- page fingerprints for HTML, headings, footer, images, internal links, form controls, canonicals and word count
+- image-delivery fingerprints for lazy-loading, explicit intrinsic sizing and high-priority image usage
+- shared CSS, JavaScript and consent-asset fingerprints
+- exact critical-route probes for the routes that were reported broken during final readiness testing:
+  - MyCalcTools: `/bmi-calculator`, `/calorie-calculator`
+  - MyCalendarTools: `/privacy/`, `/days-until-christmas/`, `/days-between/`
+  - WheelNamePicker: `/coin-toss`, `/dice-roller`, `/lucky-dip`
+- failure when a critical clean route redirects elsewhere, returns a bad status or stops serving HTML
+- sitemap additions/removals and page/asset signature changes
+- existing header/footer, canonical, robots, sitemap, consent, ads.txt and indexability checks
+- two-consecutive-failure confirmation and recovery clearing
+- no automatic baseline replacement and no automatic production deployment
 
-## Managed sites
-
-- `mycalctools.net` Ã¢â€ â€™ `nightowlhoothoot83-create/Mycalctools`
-- `mycalendartools.net` Ã¢â€ â€™ `nightowlhoothoot83-create/Mycalendartools`
-- `wheelnamepicker.com.au` Ã¢â€ â€™ `nightowlhoothoot83-create/Wheelnamepicker`
-
-## SaaS monitor
-
-AdSense sites and Raven-Sharp SaaS products run as separate monitor invocations. Indexing rotates through one AdSense site per invocation, preventing Search Console, sitemap, redirect and live-page checks from exhausting Cloudflare's subrequest allowance.
-
-- `pod.raven-sharp.com` - Raven-Sharp POD
-- `opt.raven-sharp.com` - Image Optimiser & Upscaler
-- `cleaner.raven-sharp.com` - Smart AI Cleaner (awaiting deployment)
-- `ads.raven-sharp.com` - Ad Manager (awaiting deployment)
-- `books.raven-sharp.com` - Book Creator (awaiting deployment)
-- `content.raven-sharp.com` - Content Creator (awaiting deployment)
-
-Endpoints: `/adsense/run` runs the three AdSense homepage checks, `/saas/run-view` runs the six SaaS checks, and `/indexing/run?site=<id>` runs indexing for one AdSense site. `/indexing/run` rotates to the next site automatically.
-
-## Page discovery and Google indexing
-
-- The Worker reads each managed site's robots.txt and sitemap files.
-- It stores up to 100 discovered URLs per site in the latest indexing report.
-- A separate daily trigger rotates through URL Inspection checks without exhausting the health-monitor request budget.
-- Sitemaps are submitted through the Search Console API.
-- The dashboard provides manual **Check indexing** and **Check repairs** actions.
-
-## Repair policy
-
-- Missing sitemap references and missing self-canonicals are safe automatic corrections.
-- Redirect-like links, policy-link changes, canonical conflicts, and other consequential changes are placed in the dashboard approval queue.
-- Approved changes use the protected repair endpoint to create a reviewable GitHub pull request.
-
-### Approving queued repairs
-
-1. Open `/repair/scan` and review every proposed change.
-2. Select **Approve queued repairs**.
-3. Enter the value configured as the Worker's `REPAIR_APPROVAL_KEY` secret.
-4. The key is sent only in the `Authorization` header to `POST /repair/run`; it is not stored by the dashboard.
-5. Review and merge the resulting GitHub pull requests before Cloudflare Pages deploys them.
-
-If the secret value is no longer known, replace `REPAIR_APPROVAL_KEY` in the Worker's Cloudflare settings and use the new value. Cloudflare does not reveal an existing secret value.
-
-## Required Cloudflare bindings
-
-- `MONITOR_KV`: existing `site-monitor-history` KV namespace
-- `GITHUB_TOKEN`: fine-grained or classic token with repository contents and pull-request write access
-- `REPAIR_APPROVAL_KEY`: separate random secret required to approve repair pull requests
-- `GSC_SERVICE_ACCOUNT_KEY`: Google service-account JSON with Search Console access
-
-Google's general Search Console API supports sitemap submission and URL inspection. Direct Indexing API notifications are intentionally excluded because Google restricts them to qualifying job-posting and livestream pages.
-
-## Regression baselines
-
-`POST /regression/baseline?site=<id>` requires `Authorization: Bearer <REPAIR_APPROVAL_KEY>`. Valid IDs are `mycalctools`, `mycalendartools`, and `wheel`. A saved v2 baseline contains the homepage and policy/infrastructure checks plus a structural signature for every freshly audited sitemap page and hashes of the shared CSS, JavaScript and consent assets that control the visual system. The monitor detects removed or added pages/assets, changed canonicals/final URLs, content or stylesheet/script hashes, lost headings/footers/images/links/form controls, and reduced word counts. A difference is reported for recheck and becomes confirmed only after two consecutive checks of that site.
-
-
+The final gate update was applied only after `npm test` and `npm run check:all` passed. Optimized image replacements are intended to become the new protected baseline only after the corrected sites have been visually and functionally approved.
