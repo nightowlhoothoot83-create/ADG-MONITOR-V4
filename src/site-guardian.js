@@ -68,13 +68,16 @@ function imageSources(html, base) {
   return out;
 }
 
-async function headLike(url) {
+async function headLike(url, { allowGetFallback = true } = {}) {
   try {
     let response = await fetch(url, { method: "HEAD", redirect: "follow", headers: { "User-Agent": "ADG-Site-Guardian/1.0" } });
+    if ((response.status === 405 || response.status === 403) && !allowGetFallback) {
+      return { url, passed: false, inconclusive: true, method: "HEAD", http: response.status, final_url: response.url, content_type: response.headers.get("content-type") || "", note: "HEAD is unsupported or forbidden; GET was intentionally not sent because this may be a tracked affiliate/partner link." };
+    }
     if (response.status === 405 || response.status === 403) response = await fetch(url, { method: "GET", redirect: "follow", headers: { "User-Agent": "ADG-Site-Guardian/1.0", Range: "bytes=0-2048" } });
-    return { url, passed: response.ok, http: response.status, final_url: response.url, content_type: response.headers.get("content-type") || "" };
+    return { url, passed: response.ok, inconclusive: false, method: response.status === 405 || response.status === 403 ? "HEAD" : "HEAD/GET-safe", http: response.status, final_url: response.url, content_type: response.headers.get("content-type") || "" };
   } catch (error) {
-    return { url, passed: false, http: 0, error: error.message };
+    return { url, passed: false, inconclusive: false, http: 0, error: error.message };
   }
 }
 
@@ -118,8 +121,17 @@ async function checkLinks(site, homepage) {
   const priority = all.filter(url => /ventra|affiliate|partner|ascension|raven|mycalc|mycalendar/i.test(url));
   const selected = [...priority, ...all.filter(url => !priority.includes(url))].slice(0, MAX_LINK_CHECKS);
   const results = [];
-  for (const url of selected) results.push(await headLike(url));
-  return { discovered: all.length, checked: results.length, broken: results.filter(x => !x.passed), results };
+  for (const url of selected) {
+    const tracked = /ventra|affiliate|partner/i.test(url);
+    results.push({ ...(await headLike(url, { allowGetFallback: !tracked })), tracked_link_guard: tracked });
+  }
+  return {
+    discovered: all.length,
+    checked: results.length,
+    broken: results.filter(x => !x.passed && !x.inconclusive),
+    inconclusive: results.filter(x => x.inconclusive),
+    results
+  };
 }
 
 function wheelAffiliateLayout(homepage) {
