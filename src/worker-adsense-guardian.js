@@ -1,4 +1,6 @@
 import worker from "./worker-auto.js";
+import { SITES } from "./repair.js";
+import { runSiteGuardian, latestSiteGuardian } from "./site-guardian.js";
 import { scopeMonitorEnv } from "./scoped-kv.js";
 
 const INDEXING_CRONS = new Set(["*/10 21-22 * * *", "0,10,20 23 * * *"]);
@@ -24,22 +26,35 @@ async function takeIndexingRun(env, reason) {
   return { allowed: true, used: next, limit, reason };
 }
 
+function json(value, status = 200) {
+  return new Response(JSON.stringify(value, null, 2), {
+    status,
+    headers: { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" }
+  });
+}
+
 function budgetResponse(state) {
-  return new Response(JSON.stringify({
+  return json({
     status: "budget_guarded",
     message: "Search Console indexing run skipped because the ADG daily safety budget has been reached.",
     used_runs: state.used,
     daily_run_budget: state.limit
-  }, null, 2), {
-    status: 429,
-    headers: { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" }
-  });
+  }, 429);
 }
 
 export default {
   async fetch(request, env, ctx) {
     const scoped = scopeMonitorEnv(env, "adsense");
     const url = new URL(request.url);
+
+    if (url.pathname === "/guardian.json") return json(await latestSiteGuardian(scoped));
+    if (url.pathname === "/guardian/run") {
+      const siteId = url.searchParams.get("site");
+      const sites = siteId ? SITES.filter(site => site.id === siteId) : SITES;
+      if (!sites.length) return json({ error: "Unknown site" }, 400);
+      return json(await runSiteGuardian(scoped, sites));
+    }
+
     if (url.pathname === "/indexing/run") {
       const state = await takeIndexingRun(scoped, "manual");
       if (!state.allowed) return budgetResponse(state);
