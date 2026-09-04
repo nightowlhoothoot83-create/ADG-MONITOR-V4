@@ -38,7 +38,8 @@ function chooseLoginPath(app) {
 }
 
 function chooseWorkspacePath(app) {
-  return (app.workspacePaths || []).find(path => !/register|signup|sign-up/i.test(path)) || app.workspacePaths?.[0] || null;
+  const paths = app.workspacePaths || [];
+  return paths.find(path => !/(?:login|signin|sign-in|auth|register|signup|sign-up)/i.test(path)) || null;
 }
 
 export async function runSaasAlertWatch(env, app) {
@@ -99,6 +100,7 @@ export async function runSaasAlertWatch(env, app) {
     homepage: { status: home.status, ok: home.ok, response_ms: home.response_ms, final_url: home.final_url },
     login: login ? { path: loginPath, status: login.status, ok: login.ok, response_ms: login.response_ms, final_url: login.final_url, signals: login.signals || null, auth_api_probe: login.auth_api_probe || null } : null,
     workspace: workspace ? { path: workspacePath, status: workspace.status, ok: workspace.ok, response_ms: workspace.response_ms, final_url: workspace.final_url } : null,
+    workspace_note: workspacePath ? null : "No non-auth workspace route is configured; the alert watch will not pretend the login page is the product workspace.",
     alerts,
     alert_count: alerts.length,
     highest_severity: alerts.some(a => a.severity === "critical") ? "critical" : alerts.some(a => a.severity === "warning") ? "warning" : "ok",
@@ -118,9 +120,9 @@ export async function runSaasAlertWatch(env, app) {
     summary: {
       checked: apps.length,
       total: SAAS_APPS.length,
-      critical: apps.filter(item => item.highest_severity === "critical").length,
-      warning: apps.filter(item => item.highest_severity === "warning").length,
-      healthy: apps.filter(item => item.highest_severity === "ok").length
+      passed: apps.filter(item => item.passed).length,
+      warnings: apps.filter(item => item.highest_severity === "warning").length,
+      critical: apps.filter(item => item.highest_severity === "critical").length
     }
   };
   await env.MONITOR_KV?.put(ALERT_REPORT_KEY, JSON.stringify(report));
@@ -128,5 +130,5 @@ export async function runSaasAlertWatch(env, app) {
 }
 
 export async function latestSaasAlerts(env) {
-  return await env.MONITOR_KV?.get(ALERT_REPORT_KEY, "json") || { version: 1, mode: "low_call_failure_watch", apps: [], status: "not_started" };
+  return await env.MONITOR_KV?.get(ALERT_REPORT_KEY, "json") || { version: 1, mode: "low_call_failure_watch", apps: [], summary: { checked: 0, total: SAAS_APPS.length, passed: 0, warnings: 0, critical: 0 } };
 }
