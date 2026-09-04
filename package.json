@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "test": "node --test",
-    "check": "node --check src/scoped-kv.js && node --check src/worker-adsense-guardian.js && node --check src/worker-auto.js && node --check src/worker-v2.js && node --check src/worker.js && node --check src/index.js && node --check src/indexing.js && node --check src/repair.js && node --check src/regression.js && node --check src/quality.js && node --check scripts/check-site-contracts.mjs",
+    "check": "node --check src/scoped-kv.js && node --check src/site-guardian.js && node --check src/worker-adsense-guardian.js && node --check src/worker-auto.js && node --check src/worker-v2.js && node --check src/worker.js && node --check src/index.js && node --check src/indexing.js && node --check src/repair.js && node --check src/regression.js && node --check src/quality.js && node --check scripts/check-site-contracts.mjs",
     "check:sites": "node scripts/check-site-contracts.mjs",
     "check:saas": "node --check src/scoped-kv.js && node --check src/saas-worker-guardian.js && node --check src/saas-worker-v3.js && node --check src/saas-worker-v2.js && node --check src/saas-baseline.js && node --check src/saas-testing.js && node --check src/saas-worker.js",
     "check:all": "npm run check && npm run check:saas",
