@@ -1,11 +1,57 @@
 import worker from "./worker-auto.js";
 import { scopeMonitorEnv } from "./scoped-kv.js";
 
+const INDEXING_CRONS = new Set(["*/10 21-22 * * *", "0,10,20 23 * * *"]);
+const DEFAULT_DAILY_INDEXING_RUN_BUDGET = 9;
+
+function dayKey(date = new Date()) {
+  return date.toISOString().slice(0, 10);
+}
+
+function configuredBudget(env) {
+  const raw = Number(env.GSC_DAILY_RUN_BUDGET || DEFAULT_DAILY_INDEXING_RUN_BUDGET);
+  return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : DEFAULT_DAILY_INDEXING_RUN_BUDGET;
+}
+
+async function takeIndexingRun(env, reason) {
+  if (!env.MONITOR_KV) return { allowed: true, used: 0, limit: configuredBudget(env), reason };
+  const limit = configuredBudget(env);
+  const key = `gsc-run-budget:${dayKey()}`;
+  const used = Number(await env.MONITOR_KV.get(key) || 0);
+  if (used >= limit) return { allowed: false, used, limit, reason };
+  const next = used + 1;
+  await env.MONITOR_KV.put(key, String(next), { expirationTtl: 172800 });
+  return { allowed: true, used: next, limit, reason };
+}
+
+function budgetResponse(state) {
+  return new Response(JSON.stringify({
+    status: "budget_guarded",
+    message: "Search Console indexing run skipped because the ADG daily safety budget has been reached.",
+    used_runs: state.used,
+    daily_run_budget: state.limit
+  }, null, 2), {
+    status: 429,
+    headers: { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" }
+  });
+}
+
 export default {
-  fetch(request, env, ctx) {
-    return worker.fetch(request, scopeMonitorEnv(env, "adsense"), ctx);
+  async fetch(request, env, ctx) {
+    const scoped = scopeMonitorEnv(env, "adsense");
+    const url = new URL(request.url);
+    if (url.pathname === "/indexing/run") {
+      const state = await takeIndexingRun(scoped, "manual");
+      if (!state.allowed) return budgetResponse(state);
+    }
+    return worker.fetch(request, scoped, ctx);
   },
-  scheduled(event, env, ctx) {
-    return worker.scheduled(event, scopeMonitorEnv(env, "adsense"), ctx);
+  async scheduled(event, env, ctx) {
+    const scoped = scopeMonitorEnv(env, "adsense");
+    if (INDEXING_CRONS.has(event.cron)) {
+      const state = await takeIndexingRun(scoped, "scheduled");
+      if (!state.allowed) return;
+    }
+    return worker.scheduled(event, scoped, ctx);
   }
 };
