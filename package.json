@@ -10,7 +10,8 @@
     "check:saas": "node --check src/saas-worker-v3.js && node --check src/saas-worker-v2.js && node --check src/saas-baseline.js && node --check src/saas-testing.js && node --check src/saas-worker.js",
     "check:all": "npm run check && npm run check:saas",
     "deploy:adg": "wrangler deploy --config wrangler.jsonc",
-    "deploy:saas": "wrangler deploy --config wrangler.saas.jsonc",
+    "deploy:saas:check": "npm run check:saas && wrangler deploy --config wrangler.saas.jsonc --dry-run",
+    "deploy:saas": "npm run deploy:saas:check && wrangler deploy --config wrangler.saas.jsonc",
     "deploy:all": "npm run check:all && npm run deploy:adg && npm run deploy:saas"
   },
   "devDependencies": {
