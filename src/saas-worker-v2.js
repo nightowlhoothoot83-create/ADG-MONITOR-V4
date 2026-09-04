@@ -167,6 +167,14 @@ export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
 
+    if (url.pathname === "/health") return json({
+      ok: true,
+      service: "adg-saas-monitor",
+      version: 4,
+      baseline_version: RAVEN_SHELL_VERSION,
+      apps: SAAS_APPS.length,
+      audit: "safe_read_only"
+    });
     if (url.pathname === "/report.json") return json(await readReport(env));
     if (url.pathname === "/status.json") return json({ status: await readStatus(env) });
     if (url.pathname === "/baseline.json") return json({ version: RAVEN_SHELL_VERSION, baseline: RAVEN_SHELL_BASELINE });
