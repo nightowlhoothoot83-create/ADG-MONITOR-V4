@@ -4,7 +4,7 @@ import { SAAS_APPS, auditSaasApp as legacyAuditSaasApp } from "./saas-baseline.j
 const REPORT_KEY = "saas-shell-monitor-report-v4";
 const STATUS_KEY = "saas-shell-monitor-status-v4";
 const MANUAL_CURSOR_KEY = "saas-shell-manual-cursor-v4";
-const USER_AGENT = "ADG-SaaS-Monitor/4.1";
+const USER_AGENT = "ADG-SaaS-Monitor/4.2";
 const BRAND_MARKERS = [
   "mystical-moments", "zyia", "spewcrew", "spew-crew", "feedthefeed", "feed-the-feed",
   "mycalctools", "mycalendartools", "wheelnamepicker", "adgdownloads", "adg-downloads"
@@ -14,7 +14,7 @@ async function fetchSource(url) {
   try {
     const response = await fetch(url, {
       redirect: "follow",
-      headers: { "User-Agent": USER_AGENT, "Cache-Control": "no-cache", "Accept": "text/html,text/css,application/javascript,*/*" }
+      headers: { "User-Agent": USER_AGENT, "Cache-Control": "no-cache", "Accept": "text/html,text/css,application/javascript,image/*,*/*" }
     });
     if (!response.ok) return { ok: false, status: response.status, body: "", type: response.headers.get("content-type") || "" };
     const type = response.headers.get("content-type") || "";
@@ -40,6 +40,38 @@ function linkedFirstPartyAssets(html, base) {
   return found.slice(0, 4);
 }
 
+function footerBlock(html) {
+  const matches = [...String(html || "").matchAll(/<footer\b[\s\S]*?<\/footer>/gi)];
+  return matches.map(match => match[0]).join("\n");
+}
+
+function footerLogoReference(html, base) {
+  const footer = footerBlock(html);
+  if (!footer) return null;
+  const candidates = [...footer.matchAll(/<img\b[^>]*src=["']([^"']+)["'][^>]*>/gi)];
+  for (const match of candidates) {
+    const tag = match[0];
+    if (!/(ascension|adg)/i.test(tag)) continue;
+    try { return new URL(match[1], base).href; } catch { return null; }
+  }
+  return null;
+}
+
+async function verifyFooter(app, html) {
+  const footer = footerBlock(html);
+  const logoUrl = footerLogoReference(html, app.url);
+  if (!logoUrl) return { footer_present: Boolean(footer), logo_referenced: false, logo_loads: false, logo_url: null };
+  const result = await fetchSource(logoUrl);
+  return {
+    footer_present: Boolean(footer),
+    logo_referenced: true,
+    logo_loads: result.ok && /^image\//i.test(result.type || ""),
+    logo_url: logoUrl,
+    logo_http: result.status || 0,
+    logo_content_type: result.type || ""
+  };
+}
+
 function descriptivePreviewAlt(evidence) {
   const direct = /<img\b(?=[^>]*(?:product-preview|workspace-preview|book-workspace-preview|showcase\/))(?=[^>]*\balt=["'][^"']{12,}["'])[^>]*>/i;
   if (direct.test(evidence)) return true;
@@ -63,11 +95,16 @@ async function sourceEvidence(app) {
     checked.push({ url, ok: result.ok, status: result.status, type: result.type });
     if (result.ok && result.body) chunks.push(result.body);
   }
-  return { evidence: chunks.join("\n"), assets: checked };
+  return { evidence: chunks.join("\n"), homepage_html: home.body || "", assets: checked };
 }
 
 function removeIssue(result, predicate) {
   result.issues = (result.issues || []).filter(item => !predicate(item));
+}
+
+function ensureIssue(result, severity, area, message, recommendation) {
+  if ((result.issues || []).some(item => item.area === area && item.message === message)) return;
+  result.issues = [...(result.issues || []), { severity, area, message, recommendation }];
 }
 
 function recalc(result) {
@@ -88,6 +125,7 @@ async function tunedAuditSaasApp(app) {
   const source = await sourceEvidence(app);
   const evidence = source.evidence || "";
   const checks = result.baseline_checks;
+  const footer = await verifyFooter(app, source.homepage_html);
 
   const fontEvidence = /Outfit/i.test(evidence)
     && /Cabinet(?:\s+|-)?Grotesk|cabinet-grotesk/i.test(evidence)
@@ -105,6 +143,21 @@ async function tunedAuditSaasApp(app) {
   if (brands >= 4) checks.sister_brand_navigation = true;
   if (previewAltEvidence) checks.preview_alt_text = true;
 
+  // These are intentionally strict. A loose ADG asset or text elsewhere on the page
+  // cannot satisfy the footer-logo requirement.
+  checks.footer_present = footer.footer_present;
+  checks.footer_adg_logo_referenced = footer.logo_referenced;
+  checks.footer_adg_logo_loads = footer.logo_loads;
+
+  if (!footer.footer_present) {
+    ensureIssue(result, "warning", "ecosystem footer", "Shared ecosystem footer is not present in the homepage HTML.", "Restore the approved Raven Sharp ecosystem footer before saving a new baseline.");
+  }
+  if (!footer.logo_referenced) {
+    ensureIssue(result, "warning", "ecosystem footer", "Ascension Digital Group footer logo is not referenced inside the footer.", "Restore the approved ADG logo image inside the ecosystem footer; an asset existing elsewhere does not count.");
+  } else if (!footer.logo_loads) {
+    ensureIssue(result, "critical", "ecosystem footer", `Ascension Digital Group footer logo does not load as an image (HTTP ${footer.logo_http || 0}).`, "Repair the footer logo source or restore the approved logo asset before deployment.");
+  }
+
   // Content quality is structural, not a raw 250-word quota. A concise landing page is acceptable
   // when it already has product-specific features, a real preview, pricing and a clear action.
   if ((result.homepage?.word_count || 0) >= 150
@@ -121,7 +174,7 @@ async function tunedAuditSaasApp(app) {
   if (checks.preview_alt_text) {
     removeIssue(result, item => item.area === "accessibility" && /Product preview/i.test(item.message));
   }
-  if (checks.adg_identity && checks.adg_tagline) {
+  if (checks.adg_identity && checks.adg_tagline && checks.footer_adg_logo_loads) {
     removeIssue(result, item => item.area === "ecosystem footer" && /identity\/tagline is incomplete/i.test(item.message));
   }
   if (checks.sister_brand_navigation) {
@@ -129,17 +182,21 @@ async function tunedAuditSaasApp(app) {
   }
 
   result.detector = {
-    version: "4.1",
-    mode: "homepage + linked first-party CSS/JS",
+    version: "4.2",
+    mode: "homepage + linked first-party CSS/JS + strict footer asset verification",
     linked_assets_checked: source.assets.length,
     linked_assets: source.assets,
+    footer,
     evidence: {
       fonts: fontEvidence,
       palette: paletteEvidence,
       adg_tagline: taglineEvidence,
       sister_brand_markers: brands,
       descriptive_preview_alt: previewAltEvidence,
-      structural_public_copy: checks.useful_public_copy
+      structural_public_copy: checks.useful_public_copy,
+      footer_present: footer.footer_present,
+      footer_adg_logo_referenced: footer.logo_referenced,
+      footer_adg_logo_loads: footer.logo_loads
     }
   };
 
@@ -159,7 +216,7 @@ async function saveAppResult(env, result) {
   const report = {
     version: 4,
     baseline_version: previous.baseline_version || result.baseline_version,
-    detector_version: "4.1",
+    detector_version: "4.2",
     run_at: new Date().toISOString(),
     average_baseline_percent: values.length ? Math.round(values.reduce((a, b) => a + b, 0) / values.length) : 0,
     passed: apps.filter(app => app.status === "passed").length,
@@ -173,14 +230,14 @@ async function saveAppResult(env, result) {
 
 async function runOne(env, app) {
   const startedAt = new Date().toISOString();
-  await env.MONITOR_KV?.put(STATUS_KEY, JSON.stringify({ status: "running", app: app.id, app_name: app.name, detector_version: "4.1", started_at: startedAt }));
+  await env.MONITOR_KV?.put(STATUS_KEY, JSON.stringify({ status: "running", app: app.id, app_name: app.name, detector_version: "4.2", started_at: startedAt }));
   try {
     const result = await tunedAuditSaasApp(app);
     const report = await saveAppResult(env, result);
-    await env.MONITOR_KV?.put(STATUS_KEY, JSON.stringify({ status: "completed", app: app.id, app_name: app.name, detector_version: "4.1", started_at: startedAt, completed_at: new Date().toISOString() }));
+    await env.MONITOR_KV?.put(STATUS_KEY, JSON.stringify({ status: "completed", app: app.id, app_name: app.name, detector_version: "4.2", started_at: startedAt, completed_at: new Date().toISOString() }));
     return report;
   } catch (error) {
-    await env.MONITOR_KV?.put(STATUS_KEY, JSON.stringify({ status: "failed", app: app.id, app_name: app.name, detector_version: "4.1", started_at: startedAt, failed_at: new Date().toISOString(), message: error.message }));
+    await env.MONITOR_KV?.put(STATUS_KEY, JSON.stringify({ status: "failed", app: app.id, app_name: app.name, detector_version: "4.2", started_at: startedAt, failed_at: new Date().toISOString(), message: error.message }));
     throw error;
   }
 }

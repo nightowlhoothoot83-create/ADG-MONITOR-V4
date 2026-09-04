@@ -1,7 +1,7 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "adg-monitor-v4",
-  "main": "src/worker-auto.js",
+  "main": "src/worker-adsense-guardian.js",
   "compatibility_date": "2026-07-29",
   "observability": { "enabled": true },
   "triggers": { "crons": [
@@ -10,6 +10,9 @@
     "0,10,20 23 * * *",
     "40 23 * * *"
   ] },
+  "vars": {
+    "MONITOR_SCOPE": "adsense"
+  },
   "kv_namespaces": [
     { "binding": "MONITOR_KV", "id": "b0ccea6158eb468198c6b80bb2232250" }
   ]
