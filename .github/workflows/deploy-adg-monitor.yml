@@ -1,4 +1,4 @@
-name: Deploy SaaS Monitor Worker
+name: Deploy ADG Monitor Worker
 
 on:
   workflow_dispatch:
@@ -30,11 +30,11 @@ jobs:
           test -n "$CLOUDFLARE_API_TOKEN" || { echo "Missing CLOUDFLARE_API_TOKEN repository secret"; exit 1; }
           test -n "$CLOUDFLARE_ACCOUNT_ID" || { echo "Missing CLOUDFLARE_ACCOUNT_ID repository secret"; exit 1; }
 
-      - name: Validate SaaS monitor source
-        run: npm run check:saas
+      - name: Validate ADG monitor source
+        run: npm run check
 
       - name: Wrangler dry-run
-        run: npx wrangler deploy --config wrangler.saas.jsonc --dry-run
+        run: npx wrangler deploy --config wrangler.jsonc --dry-run
 
-      - name: Deploy adg-saas-monitor
-        run: npx wrangler deploy --config wrangler.saas.jsonc
+      - name: Deploy adg-monitor-v4
+        run: npx wrangler deploy --config wrangler.jsonc
