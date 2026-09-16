@@ -414,12 +414,28 @@ async function mapLimit(values, fn) {
   return out;
 }
 
+function manualRequestCandidate(x) {
+  try {
+    const path = new URL(x.url).pathname.toLowerCase().replace(/\/$/, "") || "/";
+    if (path === "/") return true;
+    return !/(?:^|\/)(?:privacy|terms|about|faq|contact|sitemap|cookies?|disclaimer|accessibility)(?:\/|$)/i.test(path);
+  } catch {
+    return false;
+  }
+}
+
 function manualPriority(x) {
+  let score = 0;
   const coverage = String(x.coverage_state || "");
-  if (/crawled.*not indexed/i.test(coverage)) return 30;
-  if (/discovered.*not indexed/i.test(coverage)) return 20;
-  if (/unknown to google/i.test(coverage)) return 10;
-  return 1;
+  if (/crawled.*not indexed/i.test(coverage)) score += 30;
+  else if (/discovered.*not indexed/i.test(coverage)) score += 20;
+  else if (/unknown to google/i.test(coverage)) score += 10;
+  try {
+    const path = new URL(x.url).pathname.toLowerCase();
+    if (path === "/") score += 100;
+    if (/(?:calculator|picker|wheel|calendar|holiday|school|term|guide|countdown|zodiac|moon|date|time|convert|generator|random|dice|lucky|chore|activity|colour|color)/i.test(path)) score += 50;
+  } catch {}
+  return score;
 }
 
 function classifyInspections(inspections, liveAudits) {
@@ -458,6 +474,7 @@ function classifyInspections(inspections, liveAudits) {
   }
 
   const manualQueue = [...unindexedHealthy]
+    .filter(manualRequestCandidate)
     .sort((a, b) => manualPriority(b) - manualPriority(a))
     .slice(0, MANUAL_QUEUE_PER_SITE)
     .map(x => ({
