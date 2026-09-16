@@ -19,15 +19,9 @@ jobs:
         run: |
           python - <<'PY'
           from pathlib import Path
+          import re
           p=Path('src/indexing.js')
           s=p.read_text()
-          old='''function manualPriority(x) {
-            const coverage = String(x.coverage_state || "");
-            if (/crawled.*not indexed/i.test(coverage)) return 30;
-            if (/discovered.*not indexed/i.test(coverage)) return 20;
-            if (/unknown to google/i.test(coverage)) return 10;
-            return 1;
-          }'''
           new='''function manualRequestCandidate(x) {
             try {
               const path = new URL(x.url).pathname.toLowerCase().replace(/\\/$/, "") || "/";
@@ -51,17 +45,13 @@ jobs:
             } catch {}
             return score;
           }'''
-          if old not in s:
-              raise SystemExit('manualPriority block not found')
-          s=s.replace(old,new,1)
-          oldq='''  const manualQueue = [...unindexedHealthy]
-            .sort((a, b) => manualPriority(b) - manualPriority(a))'''
-          newq='''  const manualQueue = [...unindexedHealthy]
-            .filter(manualRequestCandidate)
-            .sort((a, b) => manualPriority(b) - manualPriority(a))'''
-          if oldq not in s:
-              raise SystemExit('manualQueue block not found')
-          s=s.replace(oldq,newq,1)
+          s,n=re.subn(r'function manualPriority\(x\) \{.*?\n\}', new, s, count=1, flags=re.S)
+          if n != 1:
+              raise SystemExit(f'manualPriority replacement count={n}')
+          pattern=r'(const manualQueue = \[\.\.\.unindexedHealthy\]\n)(\s+)(\.sort\(\(a, b\) => manualPriority\(b\) - manualPriority\(a\)\))'
+          s,n=re.subn(pattern, lambda m: m.group(1)+m.group(2)+'.filter(manualRequestCandidate)\n'+m.group(2)+m.group(3), s, count=1)
+          if n != 1:
+              raise SystemExit(f'manualQueue replacement count={n}')
           p.write_text(s)
           PY
           rm .github/workflows/apply-indexing-priority-patch.yml
