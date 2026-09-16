@@ -2,6 +2,10 @@ name: Deploy ADG site monitor Worker
 
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/deploy-adg-worker.yml'
 
 permissions:
   contents: read
