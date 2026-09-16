@@ -1,0 +1,40 @@
+name: Verify live AdSense review freeze
+
+on:
+  push:
+    branches: [ops/verify-live-freeze-20260917]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify live worker endpoints
+        shell: bash
+        run: |
+          set -euo pipefail
+          base="https://adg-monitor-v4.ascensiondigitalagency.workers.dev"
+
+          echo "===== HEALTH ====="
+          health="$(curl -fsSL --max-time 20 "$base/health")"
+          echo "$health"
+          echo "$health" | grep -q '"active": true'
+          echo "$health" | grep -q '"automated_site_repairs": "disabled"'
+
+          echo "===== REPAIR LOCK ====="
+          code="$(curl -sS --max-time 20 -o /tmp/repair.txt -w '%{http_code}' "$base/repair/scan")"
+          cat /tmp/repair.txt
+          test "$code" = "423"
+          grep -q '"status": "review_frozen"' /tmp/repair.txt
+
+          echo "===== DASHBOARD ====="
+          curl -fsSL --max-time 20 "$base/report" -o /tmp/report.html
+          grep -q 'AdSense review freeze active' /tmp/report.html
+          grep -q 'Repairs locked' /tmp/report.html
+          if grep -q 'Thin-content advisory:' /tmp/report.html; then
+            echo 'Old Thin-content advisory wording is still visible'
+            exit 1
+          fi
+          echo 'LIVE_FREEZE_VERIFY=OK'
