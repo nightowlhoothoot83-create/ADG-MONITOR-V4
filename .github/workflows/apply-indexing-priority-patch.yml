@@ -1,0 +1,72 @@
+name: Apply indexing priority queue patch
+
+on:
+  push:
+    branches: [fix/indexing-priority-queue-20260917]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/indexing-priority-queue-20260917
+      - name: Prioritise useful manual indexing requests
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('src/indexing.js')
+          s=p.read_text()
+          old='''function manualPriority(x) {
+            const coverage = String(x.coverage_state || "");
+            if (/crawled.*not indexed/i.test(coverage)) return 30;
+            if (/discovered.*not indexed/i.test(coverage)) return 20;
+            if (/unknown to google/i.test(coverage)) return 10;
+            return 1;
+          }'''
+          new='''function manualRequestCandidate(x) {
+            try {
+              const path = new URL(x.url).pathname.toLowerCase().replace(/\\/$/, "") || "/";
+              if (path === "/") return true;
+              return !/(?:^|\\/)(?:privacy|terms|about|faq|contact|sitemap|cookies?|disclaimer|accessibility)(?:\\/|$)/i.test(path);
+            } catch {
+              return false;
+            }
+          }
+
+          function manualPriority(x) {
+            let score = 0;
+            const coverage = String(x.coverage_state || "");
+            if (/crawled.*not indexed/i.test(coverage)) score += 30;
+            else if (/discovered.*not indexed/i.test(coverage)) score += 20;
+            else if (/unknown to google/i.test(coverage)) score += 10;
+            try {
+              const path = new URL(x.url).pathname.toLowerCase();
+              if (path === "/") score += 100;
+              if (/(?:calculator|picker|wheel|calendar|holiday|school|term|guide|countdown|zodiac|moon|date|time|convert|generator|random|dice|lucky|chore|activity|colour|color)/i.test(path)) score += 50;
+            } catch {}
+            return score;
+          }'''
+          if old not in s:
+              raise SystemExit('manualPriority block not found')
+          s=s.replace(old,new,1)
+          oldq='''  const manualQueue = [...unindexedHealthy]
+            .sort((a, b) => manualPriority(b) - manualPriority(a))'''
+          newq='''  const manualQueue = [...unindexedHealthy]
+            .filter(manualRequestCandidate)
+            .sort((a, b) => manualPriority(b) - manualPriority(a))'''
+          if oldq not in s:
+              raise SystemExit('manualQueue block not found')
+          s=s.replace(oldq,newq,1)
+          p.write_text(s)
+          PY
+          rm .github/workflows/apply-indexing-priority-patch.yml
+          git config user.name "Nightowlhoothoot83"
+          git config user.email "nightowl.hoothoot.83@gmail.com"
+          git add -A
+          git commit -m "Prioritise useful manual indexing requests"
+          git push origin HEAD:fix/indexing-priority-queue-20260917
