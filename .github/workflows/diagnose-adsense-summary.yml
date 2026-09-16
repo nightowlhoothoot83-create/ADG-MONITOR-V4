@@ -1,0 +1,21 @@
+name: Diagnose AdSense monitor summary
+on:
+  push:
+    branches: [repair/adsense-review-freeze-monitor-20260917]
+permissions:
+  contents: read
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Print compact live monitor summary
+        shell: bash
+        run: |
+          set -euo pipefail
+          base="https://adg-monitor-v4.ascensiondigitalagency.workers.dev"
+          echo '=== report sites ==='
+          curl -fsSL "$base/report.json" | jq '{sites: [.sites.sites[] | {id,name,status,message,checks}], quality: [.quality.sites[]? | {id,name,status,thin_content_advisory_count,passed_count,checked_count,error}]}'
+          echo '=== quality ==='
+          curl -fsSL "$base/quality.json" | jq '{run_at, sites: [.sites[] | {id,name,status,thin_content_advisory_count,passed_count,checked_count,error}]}'
+          echo '=== guardian ==='
+          curl -fsSL "$base/guardian.json" | jq '{run_at, sites: [.sites[]? | {id,name,status,overall,summary,message,issues}]}'
