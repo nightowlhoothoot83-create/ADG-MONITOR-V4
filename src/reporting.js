@@ -3,13 +3,13 @@ export function indexingIssueItems(site = {}) {
   const live = (site.live_audits || [])
     .filter(item => !item.passed)
     .flatMap(item => (item.issues || []).map(issue => `${item.url}: ${issue}`));
-  const observations = site.google_observations || [];
-  return [...new Set([...discovery, ...live, ...observations].filter(Boolean))];
+  const technical = site.technical_indexing_faults || [];
+  return [...new Set([...discovery, ...live, ...technical].filter(Boolean))];
 }
 
 export function indexingSiteNeedsAttention(site = {}) {
   return Boolean(
-    (site.not_indexed_count || 0) > 0
+    (site.technical_indexing_fault_count || 0) > 0
     || (site.live_issue_count || 0) > 0
     || (site.canonical_conflict_count || 0) > 0
     || indexingIssueItems(site).length > 0

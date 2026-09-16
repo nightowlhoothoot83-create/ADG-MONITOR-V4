@@ -1,5 +1,6 @@
 import worker from "./worker-auto.js";
 import { SITES } from "./repair.js";
+import { latestIndexing } from "./indexing.js";
 import { runSiteGuardian, latestSiteGuardian } from "./site-guardian.js";
 import { scopeMonitorEnv } from "./scoped-kv.js";
 
@@ -61,7 +62,48 @@ function reviewFreezeResponse() {
   }, 423);
 }
 
-async function decorateMonitorResponse(response, pathname) {
+function esc(value) {
+  return String(value ?? "").replace(/[&<>"']/g, c => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#039;"
+  }[c]));
+}
+
+function indexingManagerSection(report = {}) {
+  const sites = report.sites || [];
+  if (!sites.length) return "";
+  const totals = sites.reduce((acc, site) => {
+    acc.indexed += site.indexed_count || 0;
+    acc.healthy += site.unindexed_healthy_count || 0;
+    acc.faults += site.technical_indexing_fault_count || 0;
+    acc.manual += site.manual_request_count || 0;
+    return acc;
+  }, { indexed: 0, healthy: 0, faults: 0, manual: 0 });
+
+  const cards = sites.map(site => {
+    const queue = site.manual_request_queue || [];
+    const sitemap = site.sitemap_submission_status || "unknown";
+    const tone = (site.technical_indexing_fault_count || 0) ? "error" : queue.length ? "waiting" : "healthy";
+    const label = (site.technical_indexing_fault_count || 0)
+      ? `${site.technical_indexing_fault_count} technical fault(s)`
+      : queue.length ? `${queue.length} manual request(s)` : "No indexing fault";
+    const queueHtml = queue.length
+      ? `<ul class="checks">${queue.map(item => `<li class="advisory"><span>↗</span><a href="${esc(item.url)}" target="_blank" rel="noreferrer">${esc(item.url)}</a><br><small>${esc(item.coverage_state || "Not indexed")}. Request indexing manually in Search Console if this page matters.</small></li>`).join("")}</ul>`
+      : `<p class="message">No healthy unindexed URL currently needs a manual Request Indexing nudge.</p>`;
+    return `<article class="card ${tone}">
+      <div class="card-head"><div><h3>${esc(site.name)}</h3><p class="message">Sitemap: ${esc(sitemap.replaceAll("_", " "))}</p></div><span class="status">${esc(label)}</span></div>
+      <div class="metrics"><span>Indexed <b>${site.indexed_count || 0}</b></span><span>Healthy unindexed <b>${site.unindexed_healthy_count || 0}</b></span><span>Technical faults <b>${site.technical_indexing_fault_count || 0}</b></span></div>
+      ${queueHtml}
+    </article>`;
+  }).join("");
+
+  return `<section id="indexing-manager"><div class="section-head"><h2>Indexing manager</h2><span>Google-safe workflow</span></div>
+    <p class="message">Sitemaps are submitted at most once a day unless they change. Google URL Inspection is used to classify pages, not to pretend we can API-submit ordinary pages for indexing.</p>
+    <div class="metrics"><span>Indexed <b>${totals.indexed}</b></span><span>Healthy but unindexed <b>${totals.healthy}</b></span><span>Technical faults <b>${totals.faults}</b></span><span>Manual request queue <b>${totals.manual}</b></span></div>
+    <div class="grid">${cards}</div>
+  </section>`;
+}
+
+async function decorateMonitorResponse(response, pathname, env) {
   const type = response.headers.get("content-type") || "";
 
   if (type.includes("application/json") && ["/health", "/report.json", "/quality.json", "/repair/report.json"].includes(pathname)) {
@@ -81,11 +123,23 @@ async function decorateMonitorResponse(response, pathname) {
     html = html.replace(/<main([^>]*)>/i, `<main$1>${banner}`);
   }
 
+  if (pathname === "/report" && !html.includes('id="indexing-manager"')) {
+    const indexing = await latestIndexing(env);
+    const manager = indexingManagerSection(indexing);
+    if (manager) {
+      html = html.replace(
+        '<section><div class="section-head"><h2>Page indexing</h2>',
+        `${manager}<section><div class="section-head"><h2>Page indexing</h2>`,
+      );
+    }
+  }
+
   html = html
     .replaceAll("thin-content advisory item(s) are informational, not automatic failures.", "short-page word-count note(s) are informational and are not an AdSense policy verdict.")
     .replaceAll("Thin-content advisory:", "Short-page word-count note:")
+    .replaceAll(">Index next site<", ">Check next site's indexing<")
     .replace(/<a class="button secondary" href="\/repair\/scan">Check repairs<\/a>/g, '<span class="button secondary" aria-disabled="true" title="Locked during AdSense review">Repairs locked</span>')
-    .replace("</head>", "<style>#approve-repairs{display:none!important}</style></head>");
+    .replace("</head>", "<style>#approve-repairs{display:none!important}#indexing-manager .checks{grid-template-columns:1fr}#indexing-manager .checks li{text-transform:none}#indexing-manager small{color:var(--muted)}</style></head>");
 
   const headers = new Headers(response.headers);
   headers.delete("content-length");
@@ -113,7 +167,7 @@ export default {
       if (!state.allowed) return budgetResponse(state);
     }
 
-    return decorateMonitorResponse(await worker.fetch(request, scoped, ctx), url.pathname);
+    return decorateMonitorResponse(await worker.fetch(request, scoped, ctx), url.pathname, scoped);
   },
   async scheduled(event, env, ctx) {
     const scoped = scopeMonitorEnv(env, "adsense");
