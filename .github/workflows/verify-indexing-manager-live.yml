@@ -1,0 +1,79 @@
+name: Verify live indexing manager
+
+on:
+  push:
+    branches: [ops/verify-indexing-manager-live-20260917]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Run live indexing manager for all AdSense sites
+        shell: bash
+        run: |
+          set -euo pipefail
+          base="https://adg-monitor-v4.ascensiondigitalagency.workers.dev"
+          for site in mycalctools mycalendartools wheel; do
+            echo "===== $site ====="
+            code="$(curl -sS -L --max-time 120 -o "/tmp/${site}.html" -w '%{http_code}' "$base/indexing/run?site=$site")"
+            test "$code" = "200"
+          done
+
+      - name: Verify v4 indexing report and live dashboard
+        shell: bash
+        run: |
+          set -euo pipefail
+          base="https://adg-monitor-v4.ascensiondigitalagency.workers.dev"
+          curl -fsSL --max-time 30 "$base/indexing/report.json" -o /tmp/indexing.json
+          curl -fsSL --max-time 30 "$base/report" -o /tmp/report.html
+          curl -fsSL --max-time 30 "$base/health" -o /tmp/health.json
+          python - <<'PY'
+          import json
+          report=json.load(open('/tmp/indexing.json'))
+          health=json.load(open('/tmp/health.json'))
+          assert report.get('version') == 4, report.get('version')
+          assert report.get('google_configured') is True, report.get('authentication_error')
+          sites=report.get('sites', [])
+          assert len(sites) == 3, len(sites)
+          required={'sitemap_submission_status','unindexed_healthy_count','technical_indexing_fault_count','manual_request_count','manual_request_queue'}
+          for site in sites:
+              missing=required-set(site)
+              assert not missing, (site.get('id'), sorted(missing))
+              print(site['id'], {
+                  'discovered': site.get('discovered_count',0),
+                  'checked': site.get('inspected_count',0),
+                  'indexed': site.get('indexed_count',0),
+                  'healthy_unindexed': site.get('unindexed_healthy_count',0),
+                  'technical_faults': site.get('technical_indexing_fault_count',0),
+                  'manual_queue': site.get('manual_request_count',0),
+                  'sitemap': site.get('sitemap_submission_status'),
+              })
+          assert health.get('review_freeze',{}).get('active') is True
+          html=open('/tmp/report.html', encoding='utf-8').read()
+          assert 'Indexing manager' in html
+          assert 'AdSense review freeze active' in html
+          assert 'Repairs locked' in html
+          PY
+
+      - name: Print indexing manager report
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json, os
+          p='/tmp/indexing.json'
+          if os.path.exists(p):
+              r=json.load(open(p))
+              for s in r.get('sites',[]):
+                  print('\n###', s.get('name'))
+                  print('sitemap:', s.get('sitemap_submission_status'), s.get('sitemap_submission_reason'))
+                  print('indexed:', s.get('indexed_count'), 'healthy_unindexed:', s.get('unindexed_healthy_count'), 'technical_faults:', s.get('technical_indexing_fault_count'))
+                  for q in s.get('manual_request_queue',[]):
+                      print('MANUAL_REQUEST', q.get('url'), '|', q.get('coverage_state'))
+                  for f in s.get('technical_indexing_faults',[]):
+                      print('TECHNICAL_FAULT', f)
+          PY
