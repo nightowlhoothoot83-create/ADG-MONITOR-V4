@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { compareQualityManifests, nextRegressionState, qualityManifestForSite } from "../src/regression.js";
+import { auditRegressions, compareQualityManifests, nextRegressionState, qualityManifestForSite, resetRegressionBaseline } from "../src/regression.js";
 
 const now = Date.parse("2026-08-25T00:00:00Z");
 const page = (url, overrides = {}) => ({
@@ -38,6 +38,49 @@ test("baseline eligibility requires complete clean signed coverage", () => {
   assert.match(qualityManifestForSite(report([page("https://example.test/")], { full_recent_coverage: false }), "calendar", now).reason, /every sitemap page/);
   assert.match(qualityManifestForSite(report([page("https://example.test/", { signature: null })]), "calendar", now).reason, /structural signature/);
   assert.match(qualityManifestForSite(report([page("https://example.test/")], { shared_assets: [] }), "calendar", now).reason, /shared visual/);
+});
+
+test("inconsistent and duplicate page inventories cannot be approved", () => {
+  const pages = [page("https://example.test/"), page("https://example.test/tool")];
+  assert.equal(qualityManifestForSite(report(pages, { discovered_count: 3, known_recent_count: 3 }), "calendar", now).eligible, false);
+  assert.equal(qualityManifestForSite(report([pages[0], pages[0]]), "calendar", now).eligible, false);
+});
+
+function memoryEnv(values = {}) {
+  const data = new Map(Object.entries(values).map(([key, value]) => [key, JSON.stringify(value)]));
+  return { MONITOR_KV: {
+    async get(key, type) { const value = data.get(key); return value === undefined ? null : type === "json" ? JSON.parse(value) : value; },
+    async put(key, value) { data.set(key, value); }
+  } };
+}
+
+function mockSiteFetch(t, { publisher = true } = {}) {
+  t.mock.method(globalThis, "fetch", async requested => {
+    const url = new URL(requested);
+    const html = `<!doctype html><html><head><title>Test calendar tool</title><meta name="description" content="Calculate dates"><link rel="canonical" href="https://example.test/"></head><body><h1>Calendar tool</h1><a href="/privacy">Privacy</a><a href="/terms">Terms</a><a href="/about">About</a><a href="/contact">Contact</a><a href="/cookies">Cookies</a><script src="/cookie-consent.js"></script>${publisher ? "ca-pub-1904958390525375" : ""}</body></html>`;
+    const body = url.pathname === "/ads.txt" ? "google.com, pub-1904958390525375, DIRECT"
+      : url.pathname === "/robots.txt" ? "User-agent: *\nSitemap: https://example.test/sitemap.xml"
+      : url.pathname === "/sitemap.xml" ? "<urlset></urlset>"
+      : url.pathname === "/cookie-consent.js" ? "cookieConsent accept granted decline denied settings preferences"
+      : url.pathname.startsWith("/cookies") ? "<html><title>Cookie policy</title><h1>Cookie policy</h1>Cookie consent uses local storage. Accept or decline; change your choice in cookie settings.</html>" : html;
+    return { ok: true, status: 200, url: `https://example.test${url.pathname}`, async text() { return body; } };
+  });
+}
+
+test("the real audit flags a legacy endpoint-only baseline instead of clean", async t => {
+  mockSiteFetch(t);
+  const env = memoryEnv({ "anti-regression-baseline-v1": { version: 1, sites: { calendar: { homepage: {}, endpoints: {} } } } });
+  const result = await auditRegressions(env, [{ id: "calendar", name: "Calendar", url: "https://example.test" }]);
+  assert.equal(result.sites[0].status, "baseline_pending");
+  assert.equal(result.sites[0].regression.baseline_complete, false);
+  assert.equal(result.sites[0].regression.baseline_manifest_pages, 0);
+});
+
+test("missing publisher identity blocks saving an approved baseline", async t => {
+  mockSiteFetch(t, { publisher: false });
+  const result = await resetRegressionBaseline(memoryEnv(), [{ id: "calendar", name: "Calendar", url: "https://example.test" }]);
+  assert.equal(result.status, "refused");
+  assert.match(result.message, /critical checks/);
 });
 
 test("manifest comparison detects page, content and structural regressions", () => {
@@ -84,3 +127,4 @@ test("regressions require two consecutive failures and clear after recovery", ()
   assert.equal(recovered.confirmed, false);
   assert.equal(recovered.first_failed_at, null);
 });
+
