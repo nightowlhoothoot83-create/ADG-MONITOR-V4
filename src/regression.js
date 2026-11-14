@@ -170,6 +170,11 @@ export function qualityManifestForSite(report, siteId, now = Date.now()) {
     return { eligible: false, reason: "The quality report contains unresolved failures" };
   }
   const pages = site.pages || [];
+  if (!Number.isInteger(site.discovered_count) || site.discovered_count < 1
+    || pages.length !== site.discovered_count
+    || new Set(pages.map(page => normalizedUrl(page.url))).size !== pages.length) {
+    return { eligible: false, reason: "The signed page inventory does not match every sitemap page" };
+  }
   if (!pages.length || pages.some(page => !page.passed || !page.signature?.content_sha256)) {
     return { eligible: false, reason: "One or more sitemap pages lacks a passing structural signature" };
   }
@@ -242,7 +247,7 @@ function allCriticalPassed(site) {
   const critical = [
     "homepage.homepage_http_200", "homepage.correct_domain", "homepage.title", "homepage.description",
     "homepage.canonical", "homepage.canonical_target", "homepage.indexable", "homepage.h1", "homepage.privacy_link", "homepage.terms_link",
-    "homepage.about_link", "homepage.contact_link", "homepage.cookie_policy_link", "homepage.consent_ui",
+    "homepage.about_link", "homepage.contact_link", "homepage.cookie_policy_link", "homepage.consent_ui", "homepage.adsense_identity",
     "redirect.http_to_https", "redirect.www_to_non_www",
     "endpoint.privacy", "endpoint.terms", "endpoint.about", "endpoint.contact",
     "endpoint.cookies", "endpoint.ads_txt", "endpoint.robots_txt", "endpoint.sitemap", "endpoint.consent_script"
@@ -272,6 +277,11 @@ export async function auditRegressions(env, sites) {
     const current = await snapshotSite(site);
     const baselineSite = baseline.sites?.[site.id];
     const baselineAvailable = Boolean(baselineSite);
+    const baselineManifest = baselineSite?.quality_manifest;
+    const baselineComplete = Boolean(baselineManifest?.eligible
+      && baselineManifest.discovered_count > 0
+      && Object.keys(baselineManifest.pages || {}).length === baselineManifest.discovered_count
+      && Object.keys(baselineManifest.assets || {}).length > 0);
     const endpointRegressions = compareKnownGood(baselineSite, current);
     const currentQuality = qualityManifestForSite(qualityReport, site.id);
     const qualityRegressions = compareQualityManifests(baselineSite?.quality_manifest, currentQuality);
@@ -281,6 +291,9 @@ export async function auditRegressions(env, sites) {
       baseline_available: baselineAvailable,
       baseline_saved_at: baselineSite?.quality_manifest?.generated_at || baseline.updated_at || null,
       baseline_manifest_pages: baselineSite?.quality_manifest?.discovered_count || 0,
+      baseline_complete: baselineComplete,
+      coverage_complete: currentQuality.eligible,
+      coverage_issue: currentQuality.eligible ? null : currentQuality.reason,
       ...nextRegressionState(previous, regressedChecks, now),
       endpoint_regressions: endpointRegressions,
       quality_regressions: qualityRegressions
@@ -293,9 +306,13 @@ export async function auditRegressions(env, sites) {
       ? "regression_confirmed"
       : regressedChecks.length
         ? "recheck_required"
-        : baselineAvailable
-          ? "clean"
-          : "baseline_pending";
+        : !healthyNow
+          ? "site_check_failed"
+          : !baselineComplete
+            ? "baseline_pending"
+            : !currentQuality.eligible
+              ? "monitoring_incomplete"
+              : "clean";
     refreshed.push({ ...current, regression: state, status });
   }
 
@@ -369,3 +386,4 @@ export async function resetRegressionBaseline(env, sites, requestedSiteId = null
     note: "This explicit, approved baseline includes the homepage, infrastructure endpoints and every freshly audited sitemap page signature."
   };
 }
+

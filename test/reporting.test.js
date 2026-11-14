@@ -5,6 +5,7 @@ import {
   dashboardSummary,
   indexingIssueItems,
   indexingSiteNeedsAttention,
+  regressionPresentation,
 } from "../src/reporting.js";
 
 test("healthy but unindexed URLs do not mark the site as technically broken", () => {
@@ -58,3 +59,43 @@ test("attention is counted once per site across homepage, indexing and regressio
   assert.equal(summary.attention, 1);
   assert.equal(summary.confirmedRegressions, 1);
 });
+
+const checkedNow = Date.parse("2026-11-13T12:00:00Z");
+const protectedSite = {
+  id: "calc", status: "clean", checked_at: "2026-11-13T11:50:00Z",
+  regression: { baseline_manifest_pages: 57, baseline_complete: true, coverage_complete: true }
+};
+
+test("a legacy clean report with zero baseline pages cannot claim protection", () => {
+  const result = regressionPresentation({ ...protectedSite, regression: { baseline_manifest_pages: 0 } }, checkedNow);
+  assert.equal(result.protected, false);
+  assert.equal(result.label, "Page baseline needed");
+});
+
+test("an unrelated new report cannot refresh a stale site check", () => {
+  const site = { ...protectedSite, checked_at: "2026-11-10T11:50:00Z", run_at: "2026-11-13T12:00:00Z" };
+  assert.equal(regressionPresentation(site, checkedNow).label, "Check overdue");
+});
+
+test("missing, invalid and future check timestamps never pass", () => {
+  for (const checked_at of [undefined, "bad", "2026-11-14T12:00:00Z"]) {
+    assert.equal(regressionPresentation({ ...protectedSite, checked_at }, checkedNow).protected, false);
+  }
+});
+
+test("incomplete checks remain visible even with a complete baseline", () => {
+  const result = regressionPresentation({ ...protectedSite, regression: { ...protectedSite.regression, coverage_complete: false } }, checkedNow);
+  assert.equal(result.label, "Checks incomplete");
+  assert.equal(result.protected, false);
+});
+
+test("only a fresh complete passing comparison earns a passing label", () => {
+  assert.equal(regressionPresentation(protectedSite, checkedNow).protected, true);
+  assert.equal(regressionPresentation({ ...protectedSite, status: "unexpected" }, checkedNow).protected, false);
+});
+
+test("a missing page baseline contributes to the dashboard attention count", () => {
+  const site = { ...protectedSite, checked_at: new Date().toISOString(), regression: { baseline_manifest_pages: 0 } };
+  assert.equal(dashboardSummary({ sites: [{ id: "calc", status: "up" }] }, {}, { sites: [site] }).attention, 1);
+});
+

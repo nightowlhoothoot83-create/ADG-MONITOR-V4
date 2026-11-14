@@ -16,6 +16,28 @@ export function indexingSiteNeedsAttention(site = {}) {
   );
 }
 
+// Age belongs to each site's scan, not to the newest report from another site.
+export function regressionPresentation(site = {}, now = Date.now()) {
+  const checked = Date.parse(site.checked_at);
+  if (!Number.isFinite(checked) || checked > now + 300000 || now - checked > 36 * 60 * 60 * 1000) {
+    return { tone: "waiting", label: "Check overdue", protected: false,
+      message: "This site's regression check is missing or older than 36 hours. Its last result is not current protection." };
+  }
+  if (site.status === "regression_confirmed") return { tone: "error", label: "Confirmed regression", protected: false, message: "A change failed consecutive baseline comparisons." };
+  if (site.status === "recheck_required") return { tone: "waiting", label: "Recheck pending", protected: false, message: "A baseline comparison failed and needs confirmation." };
+  if (site.status === "site_check_failed") return { tone: "error", label: "Site check failed", protected: false, message: "One or more current critical site checks failed." };
+  if (site.status === "baseline_pending" || !site.regression?.baseline_manifest_pages || site.regression?.baseline_complete === false) {
+    return { tone: "waiting", label: "Page baseline needed", protected: false,
+      message: "A complete approved page and asset baseline is missing. Homepage checks alone do not protect page content." };
+  }
+  if (site.status !== "clean" || site.regression?.coverage_complete !== true) {
+    return { tone: "waiting", label: "Checks incomplete", protected: false,
+      message: site.regression?.coverage_issue || "Fresh complete page coverage has not been verified." };
+  }
+  return { tone: "healthy", label: "Baseline checks passed", protected: true,
+    message: "The latest completed scan matched the approved page and asset baseline. This does not verify every tool's answers or AdSense approval." };
+}
+
 export function dashboardSummary(
   siteReport = {},
   indexingReport = {},
@@ -31,7 +53,7 @@ export function dashboardSummary(
   }
 
   for (const site of regressionReport.sites || []) {
-    if (["regression_confirmed", "recheck_required"].includes(site.status)) affected.add(site.id);
+    if (!regressionPresentation(site).protected) affected.add(site.id);
   }
 
   return {
@@ -42,3 +64,4 @@ export function dashboardSummary(
       .filter(site => site.status === "regression_confirmed").length,
   };
 }
+
