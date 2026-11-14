@@ -1,4 +1,4 @@
-name: Deploy SaaS monitor Worker
+name: Deploy SaaS Monitor Worker
 
 on:
   workflow_dispatch:
